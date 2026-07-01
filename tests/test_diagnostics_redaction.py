@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from gic_ipsec_client.backend.diagnostics import redact_mapping, redact_text
+from gic_ipsec_client.backend.diagnostics import (
+    PSK_IDENTITY_MISMATCH_HINT,
+    diagnostic_hints,
+    redact_mapping,
+    redact_text,
+)
 
 
 def test_diagnostics_redaction_catches_password_patterns() -> None:
@@ -55,3 +60,11 @@ def test_redact_mapping_redacts_nested_secret_keys() -> None:
     assert redacted["profile"]["username"] == "alice"
     assert redacted["profile"]["psk"] == "<redacted>"
     assert redacted["profile"]["nested"]["password"] == "<redacted>"
+
+
+def test_diagnostics_hint_for_shared_key_identity_mismatch() -> None:
+    hints = diagnostic_hints(
+        "IKE_AUTH request failed: no shared key found for '192.168.20.8' - '185.244.158.240'"
+    )
+
+    assert hints == [PSK_IDENTITY_MISMATCH_HINT]

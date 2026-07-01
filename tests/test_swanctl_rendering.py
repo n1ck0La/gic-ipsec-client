@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from gic_ipsec_client.backend.models import VpnProfile
+from gic_ipsec_client.backend.models import VpnProfile, fortigate_default_profile
 from gic_ipsec_client.backend.renderer import (
     render_profile_config,
     render_profile_files,
@@ -47,7 +47,7 @@ def test_swanctl_secret_renderer_creates_psk_and_eap_sections() -> None:
     assert "secrets {" in rendered
     assert "ike-gic-00000000-0000-4000-8000-000000000001" in rendered
     assert "eap-gic-00000000-0000-4000-8000-000000000001" in rendered
-    assert 'id-2 = "vpn.example.com"' in rendered
+    assert "id-2 = vpn.example.com" in rendered
     assert 'secret = "do-not-leak-psk"' in rendered
     assert 'secret = "do-not-leak-password"' in rendered
 
@@ -99,3 +99,22 @@ def test_fedora_renderer_does_not_use_nested_gic_ipsec_path() -> None:
     rendered = render_profile_files(profile, layout=layout)
 
     assert "conf.d/gic-ipsec" not in rendered.config_path.as_posix()
+
+
+def test_fortigate_preset_uses_eap_identity_and_any_psk_ids() -> None:
+    profile = fortigate_default_profile()
+    profile.id = "00000000-0000-4000-8000-000000000002"
+    profile.gateway_fqdn_or_ip = "see-vpn.duckdns.org"
+    profile.username = "m.yaroshenko"
+    profile.eap_identity = ""
+    profile.psk = "do-not-leak-psk"
+    profile.password = "do-not-leak-password"
+
+    rendered = render_profile_config(profile) + "\n" + render_secret_config(profile)
+
+    assert "remote_addrs = \"see-vpn.duckdns.org\"" in rendered
+    assert "id = m.yaroshenko" in rendered
+    assert "eap_id = m.yaroshenko" in rendered
+    assert "id = %any" in rendered
+    assert "id-1 = %any" in rendered
+    assert "id-2 = %any" in rendered

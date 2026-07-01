@@ -25,6 +25,11 @@ BARE_SECRET_RE = re.compile(
 )
 FORTIGATE_SECRET_RE = re.compile(r"(?i)(\bpsksecret\s+)(\S+)")
 USERNAME_RE = re.compile(r"(?i)(\b(?:username|eap_identity)\b\s*[:=]\s*)([^\s,}]+)")
+NO_SHARED_KEY_RE = re.compile(r"no shared key found for", re.IGNORECASE)
+PSK_IDENTITY_MISMATCH_HINT = (
+    "IKE PSK identity mismatch. Try FortiGate preset with remote.id=%any and "
+    "IKE secret id-1/id-2=%any."
+)
 
 
 @dataclass(slots=True)
@@ -65,6 +70,14 @@ def redact_mapping(value: Any, *, privacy_mode: bool = False) -> Any:
     if isinstance(value, str):
         return redact_text(value, privacy_mode=privacy_mode)
     return value
+
+
+def diagnostic_hints(*texts: str) -> list[str]:
+    combined = "\n".join(texts)
+    hints: list[str] = []
+    if NO_SHARED_KEY_RE.search(combined):
+        hints.append(PSK_IDENTITY_MISMATCH_HINT)
+    return hints
 
 
 def read_os_release(path: Path = Path("/etc/os-release")) -> dict[str, str]:
@@ -187,34 +200,42 @@ def collect_diagnostics(
         profile=profile,
         config_root_override=config_root_override,
     )
+    strongswan_logs = _run_optional(
+        (
+            "journalctl",
+            "-u",
+            "strongswan*",
+            "-u",
+            "charon-systemd",
+            "--since",
+            "10 minutes ago",
+            "-n",
+            "100",
+            "--no-pager",
+        ),
+        timeout_seconds=20,
+    )
+    hints = diagnostic_hints(
+        str(swanctl_diagnostics.get("list_sas_output", "")),
+        str(swanctl_diagnostics.get("list_conns_output", "")),
+        strongswan_logs,
+    )
     sections = {
         "swanctl_config_and_vici": _format_swanctl_diagnostics(swanctl_diagnostics),
         "current_sas": str(swanctl_diagnostics.get("list_sas_output", "")),
         "loaded_conns": str(swanctl_diagnostics.get("list_conns_output", "")),
+        "diagnostic_hints": "\n".join(hints),
         "route_table": _run_optional(("ip", "route"), timeout_seconds=10),
         "dns": _run_optional(("resolvectl", "status"), timeout_seconds=10)
         if shutil.which("resolvectl")
         else _run_optional(("nmcli", "device", "show"), timeout_seconds=10),
-        "strongswan_logs": _run_optional(
-            (
-                "journalctl",
-                "-u",
-                "strongswan*",
-                "-u",
-                "charon-systemd",
-                "--since",
-                "10 minutes ago",
-                "-n",
-                "100",
-                "--no-pager",
-            ),
-            timeout_seconds=20,
-        ),
+        "strongswan_logs": strongswan_logs,
     }
     redacted_sections = {
         name: redact_text(content, privacy_mode=privacy_mode) for name, content in sections.items()
     }
     summary = check_dependencies()
+    summary["diagnostic_hints"] = hints
     summary["swanctl"] = {
         "selected_config_root": swanctl_diagnostics.get("selected_swanctl_config_root", ""),
         "selection_source": swanctl_diagnostics.get("selection_source", ""),

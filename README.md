@@ -84,8 +84,9 @@ ruff check .
 ## FortiGate Profile Flow
 
 1. Create a profile with the FortiGate preset.
-2. Enter the gateway FQDN/IP, remote ID, username/EAP identity, PSK, and user
-   password.
+2. Enter the gateway FQDN/IP, username/EAP identity, PSK, and user password.
+   Use Advanced > Strict remote ID only when the gateway requires a fixed IKE
+   identity.
 3. Start with UDP transport and IKE port 500.
 4. Put split routes in Advanced when the FortiGate does not push the intended
    route set.

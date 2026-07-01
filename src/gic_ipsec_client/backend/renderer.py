@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from gic_ipsec_client.backend.validators import validate_profile
 
 CONF_ROOT = DEBIAN_SWANCTL_ROOT / "conf.d"
 SECRETS_ROOT = DEBIAN_SWANCTL_ROOT / "secrets.d"
+BARE_ID_RE = re.compile(r"^[A-Za-z0-9_.@%:+/-]+$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +32,12 @@ class RenderedProfile:
 def _quote(value: str) -> str:
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
+
+
+def _identity_value(value: str) -> str:
+    if value == "%any" or BARE_ID_RE.fullmatch(value):
+        return value
+    return _quote(value)
 
 
 def _list_value(values: list[str]) -> str:
@@ -49,6 +57,8 @@ def render_profile_config(profile: VpnProfile, *, debug: bool = False) -> str:
     conn = profile.connection_name
     child = profile.child_name
     eap_identity = profile.eap_identity or profile.username
+    local_ike_id = profile.local_id or eap_identity
+    remote_ike_id = profile.remote_id or "%any"
 
     lines = [
         "connections {",
@@ -70,16 +80,16 @@ def render_profile_config(profile: VpnProfile, *, debug: bool = False) -> str:
         [
             "        local {",
             "            auth = eap-mschapv2",
-            f"            eap_id = {_quote(eap_identity)}",
+            f"            id = {_identity_value(local_ike_id)}",
+            f"            eap_id = {_identity_value(eap_identity)}",
         ]
     )
-    if profile.local_id:
-        lines.append(f"            id = {_quote(profile.local_id)}")
-    lines.extend(["        }", "        remote {", "            auth = psk"])
-    if profile.remote_id:
-        lines.append(f"            id = {_quote(profile.remote_id)}")
     lines.extend(
         [
+            "        }",
+            "        remote {",
+            "            auth = psk",
+            f"            id = {_identity_value(remote_ike_id)}",
             "        }",
             "        children {",
             f"            {child} {{",
@@ -103,22 +113,22 @@ def render_secret_config(profile: VpnProfile, *, debug: bool = False) -> str:
     conn = profile.connection_name
     psk = "<redacted>" if debug else profile.psk
     password = "<redacted>" if debug else profile.password
-    remote_id = profile.remote_id or profile.gateway_fqdn_or_ip
+    local_id = profile.local_id or "%any"
+    remote_id = profile.remote_id or "%any"
     eap_identity = profile.eap_identity or profile.username
 
     lines = [
         "secrets {",
         f"    ike-{conn} {{",
     ]
-    if profile.local_id:
-        lines.append(f"        id-1 = {_quote(profile.local_id)}")
     lines.extend(
         [
-            f"        id-2 = {_quote(remote_id)}",
+            f"        id-1 = {_identity_value(local_id)}",
+            f"        id-2 = {_identity_value(remote_id)}",
             f"        secret = {_quote(psk)}",
             "    }",
             f"    eap-{conn} {{",
-            f"        id = {_quote(eap_identity)}",
+            f"        id = {_identity_value(eap_identity)}",
             f"        secret = {_quote(password)}",
             "    }",
             "}",

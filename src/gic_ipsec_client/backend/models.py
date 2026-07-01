@@ -99,7 +99,7 @@ def fortigate_default_profile() -> VpnProfile:
     return VpnProfile(
         profile_name="FortiGate IKEv2",
         gateway_fqdn_or_ip="vpn.example.com",
-        remote_id="vpn.example.com",
+        remote_id="",
         local_id="",
         username="",
         eap_identity="",

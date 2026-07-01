@@ -82,7 +82,8 @@ end
 ## Client-Side Matching Values
 
 - `gateway_fqdn_or_ip`: public FortiGate address.
-- `remote_id`: FortiGate IKE identity, often the gateway FQDN.
+- `Strict remote ID`: optional. Leave empty for the FortiGate PSK+EAP default,
+  which renders `remote.id=%any` and IKE secret `id-1/id-2=%any`.
 - `username` and `eap_identity`: the user allowed by `gic-VPN-USERS`.
 - `psk`: the FortiGate `psksecret`.
 - `ike_proposals`: keep the default FortiGate-compatible values first.

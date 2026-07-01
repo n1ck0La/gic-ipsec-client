@@ -95,7 +95,12 @@ class ProfileEditor(QDialog):
         form = QFormLayout()
         form.addRow("Profile name", self.profile_name)
         form.addRow("Gateway", self.gateway)
-        form.addRow("Remote ID", self.remote_id)
+        warning = QLabel(
+            "FortiGate PSK+EAP commonly requires remote IKE ID = %any because "
+            "the peer may authenticate as its resolved IP instead of the gateway FQDN."
+        )
+        warning.setWordWrap(True)
+        form.addRow(warning)
         form.addRow("Username", self.username)
         form.addRow("EAP identity", self.eap_identity)
         form.addRow("PSK", self.psk)
@@ -108,6 +113,7 @@ class ProfileEditor(QDialog):
         advanced.setChecked(False)
         advanced_layout = QFormLayout(advanced)
         advanced_layout.addRow("Local ID", self.local_id)
+        advanced_layout.addRow("Strict remote ID", self.remote_id)
         advanced_layout.addRow("Transport", self.transport)
         advanced_layout.addRow("IKE port", self.ike_port)
         advanced_layout.addRow("Request virtual IP", self.request_virtual_ip)
