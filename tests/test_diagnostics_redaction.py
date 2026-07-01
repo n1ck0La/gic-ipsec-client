@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from gic_ipsec_client.backend.diagnostics import (
+    DNS_QUERY_WRONG_LINK_HINT,
     DNS_SERVER_MISSING_HINT,
     PSK_IDENTITY_MISMATCH_HINT,
     SPLIT_TUNNEL_REMOTE_TS_MISMATCH_HINT,
+    STRONGSWAN_DNS_HOOK_NONFATAL_HINT,
     diagnostic_hints,
+    dns_query_used_unexpected_link,
     internal_dns_test_names,
     redact_mapping,
     redact_text,
@@ -118,3 +121,27 @@ def test_diagnostics_detects_route_only_domains_on_lo() -> None:
         status,
         ["see-radars.com", "seetech.local"],
     )
+
+
+def test_diagnostics_warns_when_internal_query_uses_physical_link() -> None:
+    query_output = """
+    nextcloud.see-radars.com: 192.168.88.65
+    -- Information acquired via protocol DNS in 3.1ms.
+    -- Data is authenticated: no; Data was acquired via local or encrypted transport: no
+    -- Data from: network
+    Link 2 (ens18)
+    """
+
+    assert dns_query_used_unexpected_link(query_output)
+    hints = diagnostic_hints(internal_query_output=query_output)
+
+    assert DNS_QUERY_WRONG_LINK_HINT in hints
+
+
+def test_strongswan_dns_hook_failure_is_nonfatal_when_app_dns_succeeds() -> None:
+    hints = diagnostic_hints(
+        "handling INTERNAL_IP4_DNS attribute failed",
+        dns_apply_report={"success": True},
+    )
+
+    assert STRONGSWAN_DNS_HOOK_NONFATAL_HINT in hints

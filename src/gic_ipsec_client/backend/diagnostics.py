@@ -13,6 +13,7 @@ from typing import Any
 from gic_ipsec_client import __version__
 from gic_ipsec_client.backend.models import VpnProfile
 from gic_ipsec_client.backend.resolved import (
+    DUMMY_DNS_INTERFACE,
     LOOPBACK_DNS_INTERFACE,
     ip_route_get,
     ip_xfrm_policy,
@@ -44,6 +45,12 @@ SPLIT_TUNNEL_REMOTE_TS_MISMATCH_HINT = (
 )
 DNS_SERVER_MISSING_HINT = (
     "DNS server is configured but systemd-resolved does not show it."
+)
+DNS_QUERY_WRONG_LINK_HINT = (
+    "Internal DNS query appears to use a physical link instead of lo/seeipsec0."
+)
+STRONGSWAN_DNS_HOOK_NONFATAL_HINT = (
+    "strongSwan resolvconf DNS hook failed, but app-managed resolvectl DNS succeeded."
 )
 
 INTERNAL_DNS_TEST_HOSTS = {
@@ -97,11 +104,19 @@ def diagnostic_hints(
     profile: VpnProfile | None = None,
     list_conns_output: str = "",
     resolved_status: str = "",
+    dns_apply_report: dict[str, Any] | None = None,
+    internal_query_output: str = "",
 ) -> list[str]:
     combined = "\n".join(texts)
     hints: list[str] = []
     if NO_SHARED_KEY_RE.search(combined):
         hints.append(PSK_IDENTITY_MISMATCH_HINT)
+    if (
+        "handling INTERNAL_IP4_DNS attribute failed" in combined
+        and dns_apply_report
+        and dns_apply_report.get("success") is True
+    ):
+        hints.append(STRONGSWAN_DNS_HOOK_NONFATAL_HINT)
     if profile and profile.split_tunnel_enabled and "0.0.0.0/0" in list_conns_output:
         hints.append(SPLIT_TUNNEL_REMOTE_TS_MISMATCH_HINT)
     if profile and profile.dns_servers:
@@ -110,6 +125,8 @@ def diagnostic_hints(
         )
         if dns_server_missing:
             hints.append(DNS_SERVER_MISSING_HINT)
+    if dns_query_used_unexpected_link(internal_query_output):
+        hints.append(DNS_QUERY_WRONG_LINK_HINT)
     return hints
 
 
@@ -134,6 +151,19 @@ def route_only_domains_configured_on_lo(
     ]
     return bool(route_only_domains) and all(
         domain in resolved_status for domain in route_only_domains
+    )
+
+
+def dns_query_used_unexpected_link(
+    output: str,
+    *,
+    allowed_links: tuple[str, ...] = (LOOPBACK_DNS_INTERFACE, DUMMY_DNS_INTERFACE),
+) -> bool:
+    links = re.findall(r"\bLink\s+\d+\s+\(([^)]+)\)", output)
+    if not links:
+        return False
+    return any(link not in allowed_links for link in links) and not any(
+        link in allowed_links for link in links
     )
 
 
@@ -269,6 +299,9 @@ def collect_diagnostics(
     )
     list_conns_output = str(swanctl_diagnostics.get("list_conns_output", ""))
     list_sas_output = str(swanctl_diagnostics.get("list_sas_output", ""))
+    dns_apply_report = swanctl_diagnostics.get("dns_apply_report", {})
+    if not isinstance(dns_apply_report, dict):
+        dns_apply_report = {}
     strongswan_logs = _run_optional(
         (
             "journalctl",
@@ -285,10 +318,15 @@ def collect_diagnostics(
         timeout_seconds=20,
     )
     resolved_status_output = _run_optional(resolvectl_status().args, timeout_seconds=15)
+    lo_status_output = str(swanctl_diagnostics.get("resolvectl_status_lo_output", ""))
+    dummy_status_output = str(
+        swanctl_diagnostics.get("resolvectl_status_seeipsec0_output", "")
+    )
     xfrm_state_raw = _run_optional(ip_xfrm_state().args, timeout_seconds=10)
     query_names = internal_dns_test_names(profile.dns_search_domains) if profile else []
+    internal_dns_query_output = _run_internal_dns_queries(query_names)
     lo_route_only_domains = (
-        route_only_domains_configured_on_lo(resolved_status_output, profile.dns_search_domains)
+        route_only_domains_configured_on_lo(lo_status_output, profile.dns_search_domains)
         if profile
         else False
     )
@@ -299,6 +337,8 @@ def collect_diagnostics(
         profile=profile,
         list_conns_output=list_conns_output,
         resolved_status=resolved_status_output,
+        dns_apply_report=dns_apply_report,
+        internal_query_output=internal_dns_query_output,
     )
     sections = {
         "swanctl_config_and_vici": _format_swanctl_diagnostics(swanctl_diagnostics),
@@ -309,7 +349,10 @@ def collect_diagnostics(
         "ip_xfrm_state_summary": summarize_xfrm_state(xfrm_state_raw),
         "ip_route_get_8_8_8_8": _run_optional(ip_route_get("8.8.8.8").args, timeout_seconds=10),
         "resolvectl_status": resolved_status_output,
-        "resolvectl_query_internal_domains": _run_internal_dns_queries(query_names),
+        "resolvectl_status_lo": lo_status_output,
+        "resolvectl_status_seeipsec0": dummy_status_output,
+        "dns_apply_report": json.dumps(dns_apply_report, indent=2, sort_keys=True),
+        "resolvectl_query_internal_domains": internal_dns_query_output,
         "lo_route_only_domains_configured": str(lo_route_only_domains),
         "route_table": _run_optional(("ip", "route"), timeout_seconds=10),
         "dns": resolved_status_output
@@ -325,6 +368,10 @@ def collect_diagnostics(
     summary["dns"] = {
         "lo_route_only_domains_configured": lo_route_only_domains,
         "internal_dns_test_names": query_names,
+        "dns_apply_ran": dns_apply_report.get("dns_apply_ran", False),
+        "dns_apply_success": dns_apply_report.get("success", False),
+        "dns_apply_interface": dns_apply_report.get("verified_interface", ""),
+        "dns_apply_fallback_used": dns_apply_report.get("fallback_used", False),
     }
     summary["swanctl"] = {
         "selected_config_root": swanctl_diagnostics.get("selected_swanctl_config_root", ""),
@@ -407,6 +454,13 @@ def export_debug_bundle(
             "ip-xfrm-state-summary.txt": report.sections.get("ip_xfrm_state_summary", "") + "\n",
             "ip-route-get-8.8.8.8.txt": report.sections.get("ip_route_get_8_8_8_8", "") + "\n",
             "resolvectl-status.txt": report.sections.get("resolvectl_status", "") + "\n",
+            "resolvectl-status-lo.txt": report.sections.get("resolvectl_status_lo", "") + "\n",
+            "resolvectl-status-seeipsec0.txt": report.sections.get(
+                "resolvectl_status_seeipsec0",
+                "",
+            )
+            + "\n",
+            "dns-apply-report.json": report.sections.get("dns_apply_report", "") + "\n",
             "resolvectl-query-internal-domains.txt": report.sections.get(
                 "resolvectl_query_internal_domains",
                 "",

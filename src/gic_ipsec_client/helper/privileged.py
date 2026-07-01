@@ -11,7 +11,15 @@ from pathlib import Path
 from gic_ipsec_client.backend import commands
 from gic_ipsec_client.backend.models import VpnProfile
 from gic_ipsec_client.backend.renderer import render_profile_files
-from gic_ipsec_client.backend.resolved import apply_resolved_dns, revert_resolved_dns
+from gic_ipsec_client.backend.resolved import (
+    DUMMY_DNS_INTERFACE,
+    LOOPBACK_DNS_INTERFACE,
+    apply_resolved_dns,
+    cleanup_dns_apply_report,
+    load_dns_apply_report,
+    resolvectl_status_interface,
+    revert_resolved_dns,
+)
 from gic_ipsec_client.backend.swanctl_paths import (
     KNOWN_SWANCTL_ROOTS,
     detect_swanctl_layout,
@@ -169,6 +177,7 @@ def delete_profile(profile_id: str, *, config_root_override: str = "") -> list[s
     ]
     _delete_runtime_profile(profile_id)
     revert_resolved_dns(profile_id, run_command=commands.run_command)
+    cleanup_dns_apply_report(profile_id)
     return deleted
 
 
@@ -254,6 +263,8 @@ def swanctl_diagnostics(
     layout = detect_swanctl_layout(override=config_root_override)
     list_conns_completed = commands.run_command(commands.swanctl_list_conns())
     list_sas_completed = commands.run_command(commands.swanctl_list_sas())
+    lo_status_completed = commands.run_command(resolvectl_status_interface(LOOPBACK_DNS_INTERFACE))
+    dummy_status_completed = commands.run_command(resolvectl_status_interface(DUMMY_DNS_INTERFACE))
     list_conns_output = _completed_message(list_conns_completed)
     profile_config = layout.profile_config_path(profile_id) if profile_id else None
     connection_name = f"gic-{profile_id}" if profile_id else ""
@@ -283,6 +294,11 @@ def swanctl_diagnostics(
         "list_conns_output": list_conns_output,
         "list_sas_returncode": list_sas_completed.returncode,
         "list_sas_output": _completed_message(list_sas_completed),
+        "dns_apply_report": load_dns_apply_report(profile_id) if profile_id else {},
+        "resolvectl_status_lo_returncode": lo_status_completed.returncode,
+        "resolvectl_status_lo_output": _completed_message(lo_status_completed),
+        "resolvectl_status_seeipsec0_returncode": dummy_status_completed.returncode,
+        "resolvectl_status_seeipsec0_output": _completed_message(dummy_status_completed),
         "known_roots": [str(root) for root in KNOWN_SWANCTL_ROOTS],
     }
 

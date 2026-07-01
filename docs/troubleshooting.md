@@ -30,7 +30,9 @@ nmcli device show
   `/etc/strongswan/swanctl`; on Ubuntu/Debian it is normally `/etc/swanctl`.
 - On Fedora with systemd-resolved stub DNS and split tunnel, GIC applies
   route-only VPN DNS domains to `lo` with `resolvectl` so the physical
-  interface keeps normal public DNS behavior.
+  interface keeps normal public DNS behavior. If systemd-resolved does not
+  retain DNS on `lo`, GIC falls back to a dummy `seeipsec0` link and removes it
+  on disconnect.
 
 ## FortiGate-Side Hints
 
