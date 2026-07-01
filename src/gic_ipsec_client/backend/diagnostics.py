@@ -15,6 +15,7 @@ from gic_ipsec_client.backend.models import VpnProfile
 from gic_ipsec_client.backend.resolved import (
     DUMMY_DNS_INTERFACE,
     LOOPBACK_DNS_INTERFACE,
+    dig_short,
     ip_route_get,
     ip_xfrm_policy,
     ip_xfrm_state,
@@ -48,6 +49,10 @@ DNS_SERVER_MISSING_HINT = (
 )
 DNS_QUERY_WRONG_LINK_HINT = (
     "Internal DNS query appears to use a physical link instead of lo/seeipsec0."
+)
+DUMMY_DNS_IGNORED_HINT = (
+    "systemd-resolved ignored the dummy VPN DNS link. Applying DNS to the physical "
+    "interface is required on this Fedora policy-based IPsec setup."
 )
 STRONGSWAN_DNS_HOOK_NONFATAL_HINT = (
     "strongSwan resolvconf DNS hook failed, but app-managed resolvectl DNS succeeded."
@@ -106,6 +111,7 @@ def diagnostic_hints(
     resolved_status: str = "",
     dns_apply_report: dict[str, Any] | None = None,
     internal_query_output: str = "",
+    dummy_resolved_status: str = "",
 ) -> list[str]:
     combined = "\n".join(texts)
     hints: list[str] = []
@@ -125,7 +131,24 @@ def diagnostic_hints(
         )
         if dns_server_missing:
             hints.append(DNS_SERVER_MISSING_HINT)
-    if dns_query_used_unexpected_link(internal_query_output):
+    if (
+        profile
+        and dummy_dns_link_ignored(
+            dummy_resolved_status,
+            internal_query_output,
+            profile.dns_servers,
+        )
+    ):
+        hints.append(DUMMY_DNS_IGNORED_HINT)
+    allowed_links = [LOOPBACK_DNS_INTERFACE, DUMMY_DNS_INTERFACE]
+    if dns_apply_report:
+        verified_interface = str(dns_apply_report.get("verified_interface", "") or "")
+        if verified_interface:
+            allowed_links.append(verified_interface)
+    if dns_query_used_unexpected_link(
+        internal_query_output,
+        allowed_links=tuple(dict.fromkeys(allowed_links)),
+    ):
         hints.append(DNS_QUERY_WRONG_LINK_HINT)
     return hints
 
@@ -159,7 +182,7 @@ def dns_query_used_unexpected_link(
     *,
     allowed_links: tuple[str, ...] = (LOOPBACK_DNS_INTERFACE, DUMMY_DNS_INTERFACE),
 ) -> bool:
-    links = re.findall(r"\bLink\s+\d+\s+\(([^)]+)\)", output)
+    links = dns_query_links(output)
     if not links:
         return False
     return any(link not in allowed_links for link in links) and not any(
@@ -167,11 +190,34 @@ def dns_query_used_unexpected_link(
     )
 
 
-def _run_internal_dns_queries(names: list[str]) -> str:
+def dns_query_links(output: str) -> list[str]:
+    links = re.findall(r"\bLink\s+\d+\s+\(([^)]+)\)", output)
+    links.extend(re.findall(r"--\s*link:\s*([^\s]+)", output, flags=re.IGNORECASE))
+    return links
+
+
+def dummy_dns_link_ignored(
+    dummy_status: str,
+    query_output: str,
+    dns_servers: list[str],
+) -> bool:
+    if DUMMY_DNS_INTERFACE not in dummy_status:
+        return False
+    if dns_servers and not all(server in dummy_status for server in dns_servers):
+        return False
+    return "ens18" in dns_query_links(query_output)
+
+
+def _run_internal_dns_queries(names: list[str], dns_servers: list[str]) -> str:
     if not names:
         return "No DNS search domain configured."
     outputs: list[str] = []
     for name in names:
+        for server in dns_servers:
+            direct_result = _run_optional(dig_short(server, name).args, timeout_seconds=15)
+            outputs.append(f"$ dig @{server} {name} +short\n{direct_result}")
+        stub_result = _run_optional(dig_short("127.0.0.53", name).args, timeout_seconds=15)
+        outputs.append(f"$ dig @127.0.0.53 {name} +short\n{stub_result}")
         result = _run_optional(resolvectl_query(name).args, timeout_seconds=15)
         outputs.append(f"$ resolvectl query {name}\n{result}")
     return "\n\n".join(outputs)
@@ -322,9 +368,16 @@ def collect_diagnostics(
     dummy_status_output = str(
         swanctl_diagnostics.get("resolvectl_status_seeipsec0_output", "")
     )
+    default_interface = str(swanctl_diagnostics.get("default_dns_interface", "") or "")
+    default_status_output = str(
+        swanctl_diagnostics.get("resolvectl_status_default_interface_output", "")
+    )
     xfrm_state_raw = _run_optional(ip_xfrm_state().args, timeout_seconds=10)
     query_names = internal_dns_test_names(profile.dns_search_domains) if profile else []
-    internal_dns_query_output = _run_internal_dns_queries(query_names)
+    internal_dns_query_output = _run_internal_dns_queries(
+        query_names,
+        profile.dns_servers if profile else [],
+    )
     lo_route_only_domains = (
         route_only_domains_configured_on_lo(lo_status_output, profile.dns_search_domains)
         if profile
@@ -339,6 +392,7 @@ def collect_diagnostics(
         resolved_status=resolved_status_output,
         dns_apply_report=dns_apply_report,
         internal_query_output=internal_dns_query_output,
+        dummy_resolved_status=dummy_status_output,
     )
     sections = {
         "swanctl_config_and_vici": _format_swanctl_diagnostics(swanctl_diagnostics),
@@ -351,6 +405,7 @@ def collect_diagnostics(
         "resolvectl_status": resolved_status_output,
         "resolvectl_status_lo": lo_status_output,
         "resolvectl_status_seeipsec0": dummy_status_output,
+        "resolvectl_status_default_interface": default_status_output,
         "dns_apply_report": json.dumps(dns_apply_report, indent=2, sort_keys=True),
         "resolvectl_query_internal_domains": internal_dns_query_output,
         "lo_route_only_domains_configured": str(lo_route_only_domains),
@@ -372,6 +427,7 @@ def collect_diagnostics(
         "dns_apply_success": dns_apply_report.get("success", False),
         "dns_apply_interface": dns_apply_report.get("verified_interface", ""),
         "dns_apply_fallback_used": dns_apply_report.get("fallback_used", False),
+        "default_dns_interface": default_interface,
     }
     summary["swanctl"] = {
         "selected_config_root": swanctl_diagnostics.get("selected_swanctl_config_root", ""),
@@ -457,6 +513,11 @@ def export_debug_bundle(
             "resolvectl-status-lo.txt": report.sections.get("resolvectl_status_lo", "") + "\n",
             "resolvectl-status-seeipsec0.txt": report.sections.get(
                 "resolvectl_status_seeipsec0",
+                "",
+            )
+            + "\n",
+            "resolvectl-status-default-interface.txt": report.sections.get(
+                "resolvectl_status_default_interface",
                 "",
             )
             + "\n",

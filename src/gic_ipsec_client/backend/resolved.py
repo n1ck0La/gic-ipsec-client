@@ -33,6 +33,10 @@ INTERNAL_DNS_TEST_HOSTS = {
     "see-radars.com": "nextcloud.see-radars.com",
     "seetech.local": "srv-dc-01.seetech.local",
 }
+EXPECTED_INTERNAL_DNS_RESULTS = {
+    "nextcloud.see-radars.com": "192.168.88.65",
+    "srv-dc-01.seetech.local": "192.168.88.203",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +98,14 @@ def resolvectl_query(name: str) -> commands.CommandSpec:
     return commands.CommandSpec(("resolvectl", "query", name), timeout_seconds=15)
 
 
+def resolvectl_reset_server_features() -> commands.CommandSpec:
+    return commands.CommandSpec(("resolvectl", "reset-server-features"), timeout_seconds=15)
+
+
+def dig_short(server: str, name: str) -> commands.CommandSpec:
+    return commands.CommandSpec(("dig", f"@{server}", name, "+short"), timeout_seconds=15)
+
+
 def ip_link_add_dummy(interface: str = DUMMY_DNS_INTERFACE) -> commands.CommandSpec:
     return commands.CommandSpec(
         ("ip", "link", "add", interface, "type", "dummy"),
@@ -134,6 +146,8 @@ def build_resolvectl_apply_commands(
     dns_servers: list[str] | tuple[str, ...],
     search_domains: list[str] | tuple[str, ...],
     split_tunnel_enabled: bool,
+    split_default_route: str = "no",
+    reset_server_features: bool = False,
 ) -> list[commands.CommandSpec]:
     if not interface or not dns_servers:
         return []
@@ -159,7 +173,7 @@ def build_resolvectl_apply_commands(
             )
         specs.append(
             commands.CommandSpec(
-                ("resolvectl", "default-route", interface, "no"),
+                ("resolvectl", "default-route", interface, split_default_route),
                 timeout_seconds=15,
             )
         )
@@ -177,6 +191,8 @@ def build_resolvectl_apply_commands(
             ]
         )
     specs.append(commands.CommandSpec(("resolvectl", "flush-caches"), timeout_seconds=15))
+    if reset_server_features:
+        specs.append(resolvectl_reset_server_features())
     return specs
 
 
@@ -332,7 +348,18 @@ def revert_resolved_dns(
 ) -> list[str]:
     validate_uuid(profile_id)
     messages: list[str] = []
-    interfaces = (LOOPBACK_DNS_INTERFACE, DUMMY_DNS_INTERFACE)
+    previous_plan = load_resolved_plan(profile_id, state_root=state_root)
+    interfaces = list(
+        dict.fromkeys(
+            item
+            for item in (
+                previous_plan.interface if previous_plan else "",
+                LOOPBACK_DNS_INTERFACE,
+                DUMMY_DNS_INTERFACE,
+            )
+            if item
+        )
+    )
     for interface in interfaces:
         for spec in build_resolvectl_revert_commands(interface)[:1]:
             completed = run_command(spec)
@@ -350,6 +377,12 @@ def revert_resolved_dns(
         completed = run_command(spec)
         if getattr(completed, "returncode", 1) != 0:
             messages.append(_completed_message(completed) or f"{' '.join(spec.args)} failed.")
+    reset_spec = resolvectl_reset_server_features()
+    reset_completed = run_command(reset_spec)
+    if getattr(reset_completed, "returncode", 1) != 0:
+        messages.append(
+            _completed_message(reset_completed) or f"{' '.join(reset_spec.args)} failed."
+        )
     if not messages:
         cleanup_resolved_plan(profile_id, state_root=state_root)
     return messages
@@ -410,6 +443,21 @@ def _record_completed(
         )
 
 
+def _record_failed_execution(
+    report: dict[str, object],
+    spec: commands.CommandSpec,
+    exc: OSError | TimeoutError,
+    *,
+    phase: str,
+) -> None:
+    _record_completed(
+        report,
+        spec,
+        _SyntheticCompleted(returncode=127, stderr=str(exc)),
+        phase=phase,
+    )
+
+
 def _apply_dns_to_interface(
     *,
     profile_id: str,
@@ -420,6 +468,8 @@ def _apply_dns_to_interface(
     run_command: RunCommand,
     state_root: Path,
     report: dict[str, object],
+    split_default_route: str = "no",
+    reset_server_features: bool = False,
 ) -> list[str]:
     snapshot_spec = resolvectl_status_interface(interface)
     snapshot_result = run_command(snapshot_spec)
@@ -441,6 +491,8 @@ def _apply_dns_to_interface(
         dns_servers=dns_servers,
         search_domains=search_domains,
         split_tunnel_enabled=split_tunnel_enabled,
+        split_default_route=split_default_route,
+        reset_server_features=reset_server_features,
     )
     if apply_specs:
         report["dns_apply_ran"] = True
@@ -453,6 +505,47 @@ def _apply_dns_to_interface(
     return messages
 
 
+@dataclass(frozen=True, slots=True)
+class _SyntheticCompleted:
+    stdout: str = ""
+    stderr: str = ""
+    returncode: int = 0
+
+
+def _run_verification_command(
+    spec: commands.CommandSpec,
+    *,
+    run_command: RunCommand,
+    report: dict[str, object],
+    phase: str,
+) -> object:
+    try:
+        completed = run_command(spec)
+    except (OSError, TimeoutError) as exc:
+        _record_failed_execution(report, spec, exc, phase=phase)
+        return _SyntheticCompleted(returncode=127, stderr=str(exc))
+    _record_completed(report, spec, completed, phase=phase)
+    return completed
+
+
+def _query_links(output: str) -> list[str]:
+    links = re.findall(r"\bLink\s+\d+\s+\(([^)]+)\)", output)
+    links.extend(re.findall(r"--\s*link:\s*([^\s]+)", output, flags=re.IGNORECASE))
+    return links
+
+
+def _query_confirms_dns_path(*, name: str, output: str, selected_interface: str) -> bool:
+    expected_ip = EXPECTED_INTERNAL_DNS_RESULTS.get(name)
+    if expected_ip and re.search(rf"(?<![\d.]){re.escape(expected_ip)}(?![\d.])", output):
+        return True
+    if not output.strip():
+        return False
+    links = _query_links(output)
+    if not links:
+        return True
+    return all(link == selected_interface for link in links)
+
+
 def _verify_dns_interface(
     *,
     interface: str,
@@ -462,15 +555,45 @@ def _verify_dns_interface(
     report: dict[str, object],
 ) -> bool:
     status_spec = resolvectl_status_interface(interface)
-    status = run_command(status_spec)
-    _record_completed(report, status_spec, status, phase=f"verify-status-{interface}")
-    status_text = _completed_message(status)
+    _run_verification_command(
+        status_spec,
+        run_command=run_command,
+        report=report,
+        phase=f"verify-status-{interface}",
+    )
     names = internal_dns_test_names(search_domains)
+    confirmed = False
     for name in names:
+        for server in dns_servers:
+            dig_direct_spec = dig_short(server, name)
+            _run_verification_command(
+                dig_direct_spec,
+                run_command=run_command,
+                report=report,
+                phase=f"verify-dig-direct-{interface}",
+            )
+        dig_stub_spec = dig_short("127.0.0.53", name)
+        _run_verification_command(
+            dig_stub_spec,
+            run_command=run_command,
+            report=report,
+            phase=f"verify-dig-stub-{interface}",
+        )
         query_spec = resolvectl_query(name)
-        query = run_command(query_spec)
-        _record_completed(report, query_spec, query, phase=f"verify-query-{interface}")
-    return all(server in status_text for server in dns_servers)
+        query = _run_verification_command(
+            query_spec,
+            run_command=run_command,
+            report=report,
+            phase=f"verify-query-{interface}",
+        )
+        query_text = _completed_message(query)
+        if getattr(query, "returncode", 1) == 0 and _query_confirms_dns_path(
+            name=name,
+            output=query_text,
+            selected_interface=interface,
+        ):
+            confirmed = True
+    return confirmed
 
 
 def _apply_split_dns_with_fallback(
@@ -504,33 +627,53 @@ def _apply_split_dns_with_fallback(
         return lo_messages
 
     report["fallback_used"] = True
-    add_dummy = run_command(ip_link_add_dummy())
-    _record_completed(report, ip_link_add_dummy(), add_dummy, phase="fallback")
-    set_up = run_command(ip_link_set_up())
-    _record_completed(report, ip_link_set_up(), set_up, phase="fallback")
-    dummy_messages = _apply_dns_to_interface(
+    route_spec = ip_route_get("1.1.1.1")
+    route = run_command(route_spec)
+    _record_completed(report, route_spec, route, phase="fallback-detect-interface")
+    if getattr(route, "returncode", 1) != 0:
+        message = "Could not detect default interface for DNS fallback."
+        errors = report.setdefault("errors", [])
+        if isinstance(errors, list):
+            errors.append(message)
+        return [*lo_messages, message]
+    fallback_interface = parse_default_interface(str(getattr(route, "stdout", "")))
+    if not fallback_interface:
+        message = "Could not detect default interface for DNS fallback."
+        errors = report.setdefault("errors", [])
+        if isinstance(errors, list):
+            errors.append(message)
+        return [*lo_messages, message]
+
+    notes = report.setdefault("notes", [])
+    if isinstance(notes, list):
+        notes.append(
+            f"lo DNS did not verify; applying split DNS to {fallback_interface}."
+        )
+    physical_messages = _apply_dns_to_interface(
         profile_id=profile_id,
-        interface=DUMMY_DNS_INTERFACE,
+        interface=fallback_interface,
         dns_servers=dns_servers,
         search_domains=search_domains,
         split_tunnel_enabled=True,
         run_command=run_command,
         state_root=state_root,
         report=report,
+        split_default_route="yes",
+        reset_server_features=True,
     )
     if _verify_dns_interface(
-        interface=DUMMY_DNS_INTERFACE,
+        interface=fallback_interface,
         dns_servers=dns_servers,
         search_domains=search_domains,
         run_command=run_command,
         report=report,
     ):
         report["success"] = True
-        report["verified_interface"] = DUMMY_DNS_INTERFACE
-        return dummy_messages
+        report["verified_interface"] = fallback_interface
+        return physical_messages
     else:
-        message = "VPN DNS server did not appear on lo or seeipsec0."
+        message = f"VPN DNS verification failed for lo and {fallback_interface}."
         errors = report.setdefault("errors", [])
         if isinstance(errors, list):
             errors.append(message)
-        return [*lo_messages, *dummy_messages, message]
+        return [*lo_messages, *physical_messages, message]

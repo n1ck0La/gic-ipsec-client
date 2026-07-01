@@ -16,7 +16,9 @@ from gic_ipsec_client.backend.resolved import (
     LOOPBACK_DNS_INTERFACE,
     apply_resolved_dns,
     cleanup_dns_apply_report,
+    ip_route_get,
     load_dns_apply_report,
+    parse_default_interface,
     resolvectl_status_interface,
     revert_resolved_dns,
 )
@@ -265,6 +267,13 @@ def swanctl_diagnostics(
     list_sas_completed = commands.run_command(commands.swanctl_list_sas())
     lo_status_completed = commands.run_command(resolvectl_status_interface(LOOPBACK_DNS_INTERFACE))
     dummy_status_completed = commands.run_command(resolvectl_status_interface(DUMMY_DNS_INTERFACE))
+    default_route_completed = commands.run_command(ip_route_get("1.1.1.1"))
+    default_interface = parse_default_interface(_completed_message(default_route_completed))
+    default_status_completed = (
+        commands.run_command(resolvectl_status_interface(default_interface))
+        if default_interface
+        else None
+    )
     list_conns_output = _completed_message(list_conns_completed)
     profile_config = layout.profile_config_path(profile_id) if profile_id else None
     connection_name = f"gic-{profile_id}" if profile_id else ""
@@ -295,10 +304,19 @@ def swanctl_diagnostics(
         "list_sas_returncode": list_sas_completed.returncode,
         "list_sas_output": _completed_message(list_sas_completed),
         "dns_apply_report": load_dns_apply_report(profile_id) if profile_id else {},
+        "default_dns_interface": default_interface,
+        "ip_route_get_1_1_1_1_returncode": default_route_completed.returncode,
+        "ip_route_get_1_1_1_1_output": _completed_message(default_route_completed),
         "resolvectl_status_lo_returncode": lo_status_completed.returncode,
         "resolvectl_status_lo_output": _completed_message(lo_status_completed),
         "resolvectl_status_seeipsec0_returncode": dummy_status_completed.returncode,
         "resolvectl_status_seeipsec0_output": _completed_message(dummy_status_completed),
+        "resolvectl_status_default_interface_returncode": default_status_completed.returncode
+        if default_status_completed
+        else -1,
+        "resolvectl_status_default_interface_output": _completed_message(default_status_completed)
+        if default_status_completed
+        else "",
         "known_roots": [str(root) for root in KNOWN_SWANCTL_ROOTS],
     }
 

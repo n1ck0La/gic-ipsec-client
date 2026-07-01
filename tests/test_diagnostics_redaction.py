@@ -3,11 +3,13 @@ from __future__ import annotations
 from gic_ipsec_client.backend.diagnostics import (
     DNS_QUERY_WRONG_LINK_HINT,
     DNS_SERVER_MISSING_HINT,
+    DUMMY_DNS_IGNORED_HINT,
     PSK_IDENTITY_MISMATCH_HINT,
     SPLIT_TUNNEL_REMOTE_TS_MISMATCH_HINT,
     STRONGSWAN_DNS_HOOK_NONFATAL_HINT,
     diagnostic_hints,
     dns_query_used_unexpected_link,
+    dummy_dns_link_ignored,
     internal_dns_test_names,
     redact_mapping,
     redact_text,
@@ -136,6 +138,54 @@ def test_diagnostics_warns_when_internal_query_uses_physical_link() -> None:
     hints = diagnostic_hints(internal_query_output=query_output)
 
     assert DNS_QUERY_WRONG_LINK_HINT in hints
+
+
+def test_diagnostics_warns_when_dummy_dns_is_ignored_by_resolved() -> None:
+    profile = VpnProfile(
+        id="00000000-0000-4000-8000-000000000001",
+        profile_name="Split VPN",
+        gateway_fqdn_or_ip="vpn.example.com",
+        username="alice",
+        eap_identity="alice",
+        psk="psk",
+        password="password",
+        remote_routes=["192.168.88.0/24"],
+        dns_servers=["192.168.88.203"],
+        dns_search_domains=["see-radars.com"],
+    )
+    dummy_status = """
+    Link 99 (seeipsec0)
+        DNS Servers: 192.168.88.203
+        DNS Domain: ~see-radars.com
+    """
+    query_output = """
+    nextcloud.see-radars.com: 185.70.111.155
+    -- link: ens18
+    """
+
+    assert dummy_dns_link_ignored(dummy_status, query_output, profile.dns_servers)
+    hints = diagnostic_hints(
+        profile=profile,
+        resolved_status="DNS Servers: 192.168.88.203",
+        internal_query_output=query_output,
+        dummy_resolved_status=dummy_status,
+    )
+
+    assert DUMMY_DNS_IGNORED_HINT in hints
+
+
+def test_diagnostics_allows_physical_link_when_dns_apply_verified_it() -> None:
+    query_output = """
+    nextcloud.see-radars.com: 192.168.88.65
+    -- link: ens18
+    """
+
+    hints = diagnostic_hints(
+        internal_query_output=query_output,
+        dns_apply_report={"success": True, "verified_interface": "ens18"},
+    )
+
+    assert DNS_QUERY_WRONG_LINK_HINT not in hints
 
 
 def test_strongswan_dns_hook_failure_is_nonfatal_when_app_dns_succeeds() -> None:
