@@ -28,9 +28,9 @@ nmcli device show
 - Verify the generated `conf.d/gic-<uuid>.conf` exists under the selected
   `swanctl` config root. On Fedora this is normally
   `/etc/strongswan/swanctl`; on Ubuntu/Debian it is normally `/etc/swanctl`.
-- On Fedora with systemd-resolved stub DNS, GIC applies DNS to the active
-  default physical link with `resolvectl` because policy-based strongSwan does
-  not create a normal VPN interface.
+- On Fedora with systemd-resolved stub DNS and split tunnel, GIC applies
+  route-only VPN DNS domains to `lo` with `resolvectl` so the physical
+  interface keeps normal public DNS behavior.
 
 ## FortiGate-Side Hints
 

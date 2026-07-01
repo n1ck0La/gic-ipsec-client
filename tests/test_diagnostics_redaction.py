@@ -5,8 +5,10 @@ from gic_ipsec_client.backend.diagnostics import (
     PSK_IDENTITY_MISMATCH_HINT,
     SPLIT_TUNNEL_REMOTE_TS_MISMATCH_HINT,
     diagnostic_hints,
+    internal_dns_test_names,
     redact_mapping,
     redact_text,
+    route_only_domains_configured_on_lo,
 )
 from gic_ipsec_client.backend.models import VpnProfile
 
@@ -94,3 +96,25 @@ def test_diagnostics_detects_split_full_tunnel_mismatch() -> None:
 
     assert SPLIT_TUNNEL_REMOTE_TS_MISMATCH_HINT in hints
     assert DNS_SERVER_MISSING_HINT in hints
+
+
+def test_diagnostics_uses_internal_split_dns_hostnames() -> None:
+    assert internal_dns_test_names(["see-radars.com", "seetech.local"]) == [
+        "nextcloud.see-radars.com",
+        "srv-dc-01.seetech.local",
+    ]
+
+
+def test_diagnostics_detects_route_only_domains_on_lo() -> None:
+    status = """
+    Link 1 (lo)
+        DNS Servers: 192.168.88.203
+        DNS Domain: ~see-radars.com ~seetech.local
+    Link 2 (ens18)
+        DNS Servers: 1.1.1.1
+    """
+
+    assert route_only_domains_configured_on_lo(
+        status,
+        ["see-radars.com", "seetech.local"],
+    )

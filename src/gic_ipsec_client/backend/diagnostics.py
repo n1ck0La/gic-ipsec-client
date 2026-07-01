@@ -13,6 +13,7 @@ from typing import Any
 from gic_ipsec_client import __version__
 from gic_ipsec_client.backend.models import VpnProfile
 from gic_ipsec_client.backend.resolved import (
+    LOOPBACK_DNS_INTERFACE,
     ip_route_get,
     ip_xfrm_policy,
     ip_xfrm_state,
@@ -44,6 +45,11 @@ SPLIT_TUNNEL_REMOTE_TS_MISMATCH_HINT = (
 DNS_SERVER_MISSING_HINT = (
     "DNS server is configured but systemd-resolved does not show it."
 )
+
+INTERNAL_DNS_TEST_HOSTS = {
+    "see-radars.com": "nextcloud.see-radars.com",
+    "seetech.local": "srv-dc-01.seetech.local",
+}
 
 
 @dataclass(slots=True)
@@ -105,6 +111,40 @@ def diagnostic_hints(
         if dns_server_missing:
             hints.append(DNS_SERVER_MISSING_HINT)
     return hints
+
+
+def internal_dns_test_names(search_domains: list[str]) -> list[str]:
+    names: list[str] = []
+    for domain in search_domains:
+        clean = domain.strip().lstrip("~")
+        if not clean:
+            continue
+        names.append(INTERNAL_DNS_TEST_HOSTS.get(clean, clean))
+    return list(dict.fromkeys(names))
+
+
+def route_only_domains_configured_on_lo(
+    resolved_status: str,
+    search_domains: list[str],
+) -> bool:
+    if LOOPBACK_DNS_INTERFACE not in resolved_status:
+        return False
+    route_only_domains = [
+        f"~{domain.strip().lstrip('~')}" for domain in search_domains if domain.strip()
+    ]
+    return bool(route_only_domains) and all(
+        domain in resolved_status for domain in route_only_domains
+    )
+
+
+def _run_internal_dns_queries(names: list[str]) -> str:
+    if not names:
+        return "No DNS search domain configured."
+    outputs: list[str] = []
+    for name in names:
+        result = _run_optional(resolvectl_query(name).args, timeout_seconds=15)
+        outputs.append(f"$ resolvectl query {name}\n{result}")
+    return "\n\n".join(outputs)
 
 
 def read_os_release(path: Path = Path("/etc/os-release")) -> dict[str, str]:
@@ -246,7 +286,12 @@ def collect_diagnostics(
     )
     resolved_status_output = _run_optional(resolvectl_status().args, timeout_seconds=15)
     xfrm_state_raw = _run_optional(ip_xfrm_state().args, timeout_seconds=10)
-    query_domain = profile.dns_search_domains[0] if profile and profile.dns_search_domains else ""
+    query_names = internal_dns_test_names(profile.dns_search_domains) if profile else []
+    lo_route_only_domains = (
+        route_only_domains_configured_on_lo(resolved_status_output, profile.dns_search_domains)
+        if profile
+        else False
+    )
     hints = diagnostic_hints(
         list_sas_output,
         list_conns_output,
@@ -264,12 +309,8 @@ def collect_diagnostics(
         "ip_xfrm_state_summary": summarize_xfrm_state(xfrm_state_raw),
         "ip_route_get_8_8_8_8": _run_optional(ip_route_get("8.8.8.8").args, timeout_seconds=10),
         "resolvectl_status": resolved_status_output,
-        "resolvectl_query_internal_domain": _run_optional(
-            resolvectl_query(query_domain).args,
-            timeout_seconds=15,
-        )
-        if query_domain
-        else "No DNS search domain configured.",
+        "resolvectl_query_internal_domains": _run_internal_dns_queries(query_names),
+        "lo_route_only_domains_configured": str(lo_route_only_domains),
         "route_table": _run_optional(("ip", "route"), timeout_seconds=10),
         "dns": resolved_status_output
         if shutil.which("resolvectl")
@@ -281,6 +322,10 @@ def collect_diagnostics(
     }
     summary = check_dependencies()
     summary["diagnostic_hints"] = hints
+    summary["dns"] = {
+        "lo_route_only_domains_configured": lo_route_only_domains,
+        "internal_dns_test_names": query_names,
+    }
     summary["swanctl"] = {
         "selected_config_root": swanctl_diagnostics.get("selected_swanctl_config_root", ""),
         "selection_source": swanctl_diagnostics.get("selection_source", ""),
@@ -362,8 +407,8 @@ def export_debug_bundle(
             "ip-xfrm-state-summary.txt": report.sections.get("ip_xfrm_state_summary", "") + "\n",
             "ip-route-get-8.8.8.8.txt": report.sections.get("ip_route_get_8_8_8_8", "") + "\n",
             "resolvectl-status.txt": report.sections.get("resolvectl_status", "") + "\n",
-            "resolvectl-query-internal-domain.txt": report.sections.get(
-                "resolvectl_query_internal_domain",
+            "resolvectl-query-internal-domains.txt": report.sections.get(
+                "resolvectl_query_internal_domains",
                 "",
             )
             + "\n",

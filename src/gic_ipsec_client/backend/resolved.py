@@ -25,6 +25,7 @@ FORTIGATE_ROUTE_PRESETS = (
     "192.168.108.0/24",
     "192.168.254.0/24",
 )
+LOOPBACK_DNS_INTERFACE = "lo"
 RESOLVED_STATE_ROOT = Path("/run/gic-ipsec-client/resolved")
 RunCommand = Callable[[commands.CommandSpec], object]
 
@@ -114,7 +115,7 @@ def build_resolvectl_apply_commands(
             clean = domain.strip().lstrip("~")
             if not clean:
                 continue
-            domains.extend([f"~{clean}", clean])
+            domains.append(f"~{clean}")
         if domains:
             specs.append(
                 commands.CommandSpec(
@@ -209,12 +210,15 @@ def apply_resolved_dns(
     )
     if not resolved_is_active:
         return []
-    route = run_command(ip_route_get("1.1.1.1"))
-    if getattr(route, "returncode", 1) != 0:
-        return ["Could not detect default interface for DNS."]
-    interface = parse_default_interface(str(getattr(route, "stdout", "")))
-    if not interface:
-        return ["Could not detect default interface for DNS."]
+    if split_tunnel_enabled:
+        interface = LOOPBACK_DNS_INTERFACE
+    else:
+        route = run_command(ip_route_get("1.1.1.1"))
+        if getattr(route, "returncode", 1) != 0:
+            return ["Could not detect default interface for DNS."]
+        interface = parse_default_interface(str(getattr(route, "stdout", "")))
+        if not interface:
+            return ["Could not detect default interface for DNS."]
 
     snapshot_result = run_command(resolvectl_status_interface(interface))
     snapshot = (
