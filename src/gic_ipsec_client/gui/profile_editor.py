@@ -26,6 +26,7 @@ from gic_ipsec_client.backend.models import (
     fortigate_default_profile,
 )
 from gic_ipsec_client.backend.renderer import render_profile_config, render_secret_config
+from gic_ipsec_client.backend.resolved import FORTIGATE_ROUTE_PRESETS
 from gic_ipsec_client.backend.validators import ProfileValidationError, validate_profile
 
 
@@ -59,9 +60,19 @@ class ProfileEditor(QDialog):
         self.ike_port.setRange(1, 65535)
         self.ike_port.setValue(500)
         self.request_virtual_ip = QCheckBox()
-        self.split_tunnel_enabled = QCheckBox()
+        self.tunnel_mode = QComboBox()
+        self.tunnel_mode.addItem("Split tunnel: internal routes only", True)
+        self.tunnel_mode.addItem("Full tunnel: all traffic through VPN", False)
+        self.tunnel_mode.currentIndexChanged.connect(self._update_tunnel_note)
         self.remote_routes = QPlainTextEdit()
         self.remote_routes.setFixedHeight(70)
+        self.route_preset = QPushButton("Add FortiGate routes")
+        self.route_preset.clicked.connect(self._add_fortigate_routes)
+        self.full_tunnel_note = QLabel(
+            "Full tunnel requires FortiGate policy from IPsec interface to WAN "
+            "with NAT enabled. Create IPsec-to-WAN firewall policy with NAT enabled."
+        )
+        self.full_tunnel_note.setWordWrap(True)
         self.dns_servers = QPlainTextEdit()
         self.dns_servers.setFixedHeight(55)
         self.dns_search_domains = QPlainTextEdit()
@@ -117,7 +128,9 @@ class ProfileEditor(QDialog):
         advanced_layout.addRow("Transport", self.transport)
         advanced_layout.addRow("IKE port", self.ike_port)
         advanced_layout.addRow("Request virtual IP", self.request_virtual_ip)
-        advanced_layout.addRow("Split tunnel", self.split_tunnel_enabled)
+        advanced_layout.addRow("Tunnel mode", self.tunnel_mode)
+        advanced_layout.addRow(self.full_tunnel_note)
+        advanced_layout.addRow(self.route_preset)
         advanced_layout.addRow(QLabel("Remote routes"), self.remote_routes)
         advanced_layout.addRow(QLabel("DNS servers"), self.dns_servers)
         advanced_layout.addRow(QLabel("DNS search domains"), self.dns_search_domains)
@@ -126,6 +139,7 @@ class ProfileEditor(QDialog):
         advanced_layout.addRow("DPD enabled", self.dpd_enabled)
         advanced_layout.addRow(QLabel("Notes"), self.notes)
         layout.addWidget(advanced)
+        self._update_tunnel_note()
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -148,7 +162,9 @@ class ProfileEditor(QDialog):
         self.transport.setCurrentText(profile.transport)
         self.ike_port.setValue(profile.ike_port)
         self.request_virtual_ip.setChecked(profile.request_virtual_ip)
-        self.split_tunnel_enabled.setChecked(profile.split_tunnel_enabled)
+        index = self.tunnel_mode.findData(profile.split_tunnel_enabled)
+        self.tunnel_mode.setCurrentIndex(index if index >= 0 else 0)
+        self._update_tunnel_note()
         self.remote_routes.setPlainText(_join_lines(profile.remote_routes))
         self.dns_servers.setPlainText(_join_lines(profile.dns_servers))
         self.dns_search_domains.setPlainText(_join_lines(profile.dns_search_domains))
@@ -176,7 +192,7 @@ class ProfileEditor(QDialog):
             transport=self.transport.currentText(),  # type: ignore[arg-type]
             ike_port=self.ike_port.value(),
             request_virtual_ip=self.request_virtual_ip.isChecked(),
-            split_tunnel_enabled=self.split_tunnel_enabled.isChecked(),
+            split_tunnel_enabled=self.tunnel_mode.currentData() is True,
             remote_routes=_split_lines(self.remote_routes.toPlainText()),
             dns_servers=_split_lines(self.dns_servers.toPlainText()),
             dns_search_domains=_split_lines(self.dns_search_domains.toPlainText()),
@@ -213,3 +229,12 @@ class ProfileEditor(QDialog):
         box.setIcon(QMessageBox.Icon.Information)
         box.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         box.exec()
+
+    def _add_fortigate_routes(self) -> None:
+        existing = _split_lines(self.remote_routes.toPlainText())
+        merged = list(dict.fromkeys([*existing, *FORTIGATE_ROUTE_PRESETS]))
+        self.remote_routes.setPlainText(_join_lines(merged))
+
+    def _update_tunnel_note(self) -> None:
+        full_tunnel = self.tunnel_mode.currentData() is False
+        self.full_tunnel_note.setVisible(full_tunnel)

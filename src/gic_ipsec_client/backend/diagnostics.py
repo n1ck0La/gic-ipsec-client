@@ -12,6 +12,14 @@ from typing import Any
 
 from gic_ipsec_client import __version__
 from gic_ipsec_client.backend.models import VpnProfile
+from gic_ipsec_client.backend.resolved import (
+    ip_route_get,
+    ip_xfrm_policy,
+    ip_xfrm_state,
+    resolvectl_query,
+    resolvectl_status,
+    summarize_xfrm_state,
+)
 
 SECRET_KEYS = {"psk", "psksecret", "password", "secret", "eap_password", "eap password"}
 PRIVACY_KEYS = {"username", "eap_identity"}
@@ -29,6 +37,12 @@ NO_SHARED_KEY_RE = re.compile(r"no shared key found for", re.IGNORECASE)
 PSK_IDENTITY_MISMATCH_HINT = (
     "IKE PSK identity mismatch. Try FortiGate preset with remote.id=%any and "
     "IKE secret id-1/id-2=%any."
+)
+SPLIT_TUNNEL_REMOTE_TS_MISMATCH_HINT = (
+    "Split tunnel is enabled but loaded CHILD_SA remote_ts contains 0.0.0.0/0."
+)
+DNS_SERVER_MISSING_HINT = (
+    "DNS server is configured but systemd-resolved does not show it."
 )
 
 
@@ -72,11 +86,24 @@ def redact_mapping(value: Any, *, privacy_mode: bool = False) -> Any:
     return value
 
 
-def diagnostic_hints(*texts: str) -> list[str]:
+def diagnostic_hints(
+    *texts: str,
+    profile: VpnProfile | None = None,
+    list_conns_output: str = "",
+    resolved_status: str = "",
+) -> list[str]:
     combined = "\n".join(texts)
     hints: list[str] = []
     if NO_SHARED_KEY_RE.search(combined):
         hints.append(PSK_IDENTITY_MISMATCH_HINT)
+    if profile and profile.split_tunnel_enabled and "0.0.0.0/0" in list_conns_output:
+        hints.append(SPLIT_TUNNEL_REMOTE_TS_MISMATCH_HINT)
+    if profile and profile.dns_servers:
+        dns_server_missing = not resolved_status or not all(
+            server in resolved_status for server in profile.dns_servers
+        )
+        if dns_server_missing:
+            hints.append(DNS_SERVER_MISSING_HINT)
     return hints
 
 
@@ -200,6 +227,8 @@ def collect_diagnostics(
         profile=profile,
         config_root_override=config_root_override,
     )
+    list_conns_output = str(swanctl_diagnostics.get("list_conns_output", ""))
+    list_sas_output = str(swanctl_diagnostics.get("list_sas_output", ""))
     strongswan_logs = _run_optional(
         (
             "journalctl",
@@ -215,18 +244,34 @@ def collect_diagnostics(
         ),
         timeout_seconds=20,
     )
+    resolved_status_output = _run_optional(resolvectl_status().args, timeout_seconds=15)
+    xfrm_state_raw = _run_optional(ip_xfrm_state().args, timeout_seconds=10)
+    query_domain = profile.dns_search_domains[0] if profile and profile.dns_search_domains else ""
     hints = diagnostic_hints(
-        str(swanctl_diagnostics.get("list_sas_output", "")),
-        str(swanctl_diagnostics.get("list_conns_output", "")),
+        list_sas_output,
+        list_conns_output,
         strongswan_logs,
+        profile=profile,
+        list_conns_output=list_conns_output,
+        resolved_status=resolved_status_output,
     )
     sections = {
         "swanctl_config_and_vici": _format_swanctl_diagnostics(swanctl_diagnostics),
-        "current_sas": str(swanctl_diagnostics.get("list_sas_output", "")),
-        "loaded_conns": str(swanctl_diagnostics.get("list_conns_output", "")),
+        "current_sas": list_sas_output,
+        "loaded_conns": list_conns_output,
         "diagnostic_hints": "\n".join(hints),
+        "ip_xfrm_policy": _run_optional(ip_xfrm_policy().args, timeout_seconds=10),
+        "ip_xfrm_state_summary": summarize_xfrm_state(xfrm_state_raw),
+        "ip_route_get_8_8_8_8": _run_optional(ip_route_get("8.8.8.8").args, timeout_seconds=10),
+        "resolvectl_status": resolved_status_output,
+        "resolvectl_query_internal_domain": _run_optional(
+            resolvectl_query(query_domain).args,
+            timeout_seconds=15,
+        )
+        if query_domain
+        else "No DNS search domain configured.",
         "route_table": _run_optional(("ip", "route"), timeout_seconds=10),
-        "dns": _run_optional(("resolvectl", "status"), timeout_seconds=10)
+        "dns": resolved_status_output
         if shutil.which("resolvectl")
         else _run_optional(("nmcli", "device", "show"), timeout_seconds=10),
         "strongswan_logs": strongswan_logs,
@@ -310,6 +355,15 @@ def export_debug_bundle(
             "swanctl-list-conns.txt": report.sections.get("loaded_conns", "") + "\n",
             "swanctl-config-diagnostics.txt": report.sections.get(
                 "swanctl_config_and_vici",
+                "",
+            )
+            + "\n",
+            "ip-xfrm-policy.txt": report.sections.get("ip_xfrm_policy", "") + "\n",
+            "ip-xfrm-state-summary.txt": report.sections.get("ip_xfrm_state_summary", "") + "\n",
+            "ip-route-get-8.8.8.8.txt": report.sections.get("ip_route_get_8_8_8_8", "") + "\n",
+            "resolvectl-status.txt": report.sections.get("resolvectl_status", "") + "\n",
+            "resolvectl-query-internal-domain.txt": report.sections.get(
+                "resolvectl_query_internal_domain",
                 "",
             )
             + "\n",

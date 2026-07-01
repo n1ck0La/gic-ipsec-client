@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from gic_ipsec_client.backend.models import VpnProfile, fortigate_default_profile
 from gic_ipsec_client.backend.renderer import (
     render_profile_config,
@@ -12,6 +14,7 @@ from gic_ipsec_client.backend.swanctl_paths import (
     SwanctlLayout,
     detect_swanctl_config_root,
 )
+from gic_ipsec_client.backend.validators import ProfileValidationError, validate_profile
 
 
 def valid_profile() -> VpnProfile:
@@ -39,6 +42,33 @@ def test_swanctl_renderer_creates_expected_sections() -> None:
     assert 'remote_addrs = "vpn.example.com"' in rendered
     assert "remote_ts = 10.20.0.0/16, 10.30.0.0/16" in rendered
     assert f"{profile.child_name} {{" in rendered
+
+
+def test_split_tunnel_renders_configured_remote_routes() -> None:
+    profile = valid_profile()
+    rendered = render_profile_config(profile)
+
+    assert "remote_ts = 10.20.0.0/16, 10.30.0.0/16" in rendered
+    assert "remote_ts = 0.0.0.0/0" not in rendered
+
+
+def test_full_tunnel_renders_default_route_remote_ts() -> None:
+    profile = valid_profile()
+    profile.split_tunnel_enabled = False
+    profile.remote_routes = []
+    rendered = render_profile_config(profile)
+
+    assert "remote_ts = 0.0.0.0/0" in rendered
+
+
+def test_split_tunnel_without_routes_is_rejected() -> None:
+    profile = valid_profile()
+    profile.remote_routes = []
+
+    with pytest.raises(ProfileValidationError) as exc:
+        validate_profile(profile)
+
+    assert "Split tunnel is enabled but no remote routes are configured." in str(exc.value)
 
 
 def test_swanctl_secret_renderer_creates_psk_and_eap_sections() -> None:
@@ -109,6 +139,7 @@ def test_fortigate_preset_uses_eap_identity_and_any_psk_ids() -> None:
     profile.eap_identity = ""
     profile.psk = "do-not-leak-psk"
     profile.password = "do-not-leak-password"
+    profile.remote_routes = ["192.168.20.0/24"]
 
     rendered = render_profile_config(profile) + "\n" + render_secret_config(profile)
 

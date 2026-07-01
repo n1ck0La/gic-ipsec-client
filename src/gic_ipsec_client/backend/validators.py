@@ -116,6 +116,8 @@ def validate_profile(profile: VpnProfile, *, require_secrets: bool = True) -> No
     identity = profile.eap_identity or profile.username
     if require_secrets and not identity:
         errors.append("username or eap_identity is required for EAP-MSCHAPv2.")
+    if profile.split_tunnel_enabled and not profile.remote_routes:
+        errors.append("Split tunnel is enabled but no remote routes are configured.")
 
     for field_name, value in (
         ("remote_id", profile.remote_id),

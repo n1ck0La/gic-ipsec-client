@@ -11,6 +11,7 @@ from pathlib import Path
 from gic_ipsec_client.backend import commands
 from gic_ipsec_client.backend.models import VpnProfile
 from gic_ipsec_client.backend.renderer import render_profile_files
+from gic_ipsec_client.backend.resolved import apply_resolved_dns, revert_resolved_dns
 from gic_ipsec_client.backend.swanctl_paths import (
     KNOWN_SWANCTL_ROOTS,
     detect_swanctl_layout,
@@ -26,6 +27,9 @@ from gic_ipsec_client.backend.validators import (
 
 class HelperError(RuntimeError):
     """User-facing privileged helper error."""
+
+
+RUNTIME_PROFILE_ROOT = Path("/run/gic-ipsec-client/profiles")
 
 
 def request_dir_for_uid(uid: int) -> Path:
@@ -90,6 +94,37 @@ def _atomic_write(path: Path, content: str, *, mode: int) -> None:
             tmp_path.unlink()
 
 
+def _runtime_profile_path(profile_id: str) -> Path:
+    validate_uuid(profile_id)
+    return RUNTIME_PROFILE_ROOT / f"{profile_id}.json"
+
+
+def _write_runtime_profile(profile: VpnProfile) -> None:
+    payload = {
+        "id": profile.id,
+        "split_tunnel_enabled": profile.split_tunnel_enabled,
+        "remote_routes": profile.remote_routes,
+        "dns_servers": profile.dns_servers,
+        "dns_search_domains": profile.dns_search_domains,
+    }
+    path = _runtime_profile_path(profile.id)
+    _atomic_write(path, json.dumps(payload, indent=2, sort_keys=True), mode=0o600)
+
+
+def _read_runtime_profile(profile_id: str) -> dict[str, object] | None:
+    path = _runtime_profile_path(profile_id)
+    if not path.exists():
+        return None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return payload if isinstance(payload, dict) else None
+
+
+def _delete_runtime_profile(profile_id: str) -> None:
+    path = _runtime_profile_path(profile_id)
+    if path.exists():
+        path.unlink()
+
+
 def _request_config_root_override(payload: Mapping[str, object]) -> str:
     value = payload.get("swanctl_config_root", "")
     return str(value or "")
@@ -113,6 +148,7 @@ def render_profile_from_request(
         rendered.secrets_path.parent.mkdir(parents=True, exist_ok=True)
         os.chmod(rendered.secrets_path.parent, 0o700)
         _atomic_write(rendered.secrets_path, rendered.secrets_text, mode=rendered.secrets_mode)
+    _write_runtime_profile(profile)
     return {
         "swanctl_config_root": str(layout.root),
         "layout_source": layout.source,
@@ -123,7 +159,7 @@ def render_profile_from_request(
 
 def delete_profile(profile_id: str, *, config_root_override: str = "") -> list[str]:
     validate_uuid(profile_id)
-    return [
+    deleted = [
         str(path)
         for path in commands.delete_profile_files(
             profile_id,
@@ -131,6 +167,9 @@ def delete_profile(profile_id: str, *, config_root_override: str = "") -> list[s
             all_known_roots=not bool(config_root_override),
         )
     ]
+    _delete_runtime_profile(profile_id)
+    revert_resolved_dns(profile_id, run_command=commands.run_command)
+    return deleted
 
 
 def load_profile() -> int:
@@ -159,12 +198,33 @@ def connect_profile(profile_id: str, *, config_root_override: str = "") -> int:
             "Profile was rendered but strongSwan did not load it. "
             "Check swanctl config root and include paths."
         )
-    return commands.run_command(commands.swanctl_initiate(child_name)).returncode
+    initiate_completed = commands.run_command(commands.swanctl_initiate(child_name))
+    if initiate_completed.returncode != 0:
+        return initiate_completed.returncode
+    runtime_profile = _read_runtime_profile(profile_id)
+    if runtime_profile is None:
+        return 0
+    dns_errors = apply_resolved_dns(
+        profile_id=profile_id,
+        dns_servers=[str(item) for item in runtime_profile.get("dns_servers", []) or []],
+        search_domains=[str(item) for item in runtime_profile.get("dns_search_domains", []) or []],
+        split_tunnel_enabled=bool(runtime_profile.get("split_tunnel_enabled", True)),
+        run_command=commands.run_command,
+    )
+    if dns_errors:
+        raise HelperError("\n".join(dns_errors))
+    return 0
 
 
 def disconnect_profile(profile_id: str) -> int:
     validate_uuid(profile_id)
-    return commands.run_command(commands.swanctl_terminate(f"gic-{profile_id}")).returncode
+    completed = commands.run_command(commands.swanctl_terminate(f"gic-{profile_id}"))
+    dns_errors = revert_resolved_dns(profile_id, run_command=commands.run_command)
+    if completed.returncode != 0:
+        return completed.returncode
+    if dns_errors:
+        raise HelperError("\n".join(dns_errors))
+    return 0
 
 
 def status_profile(profile_id: str) -> str:

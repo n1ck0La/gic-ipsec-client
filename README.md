@@ -88,8 +88,10 @@ ruff check .
    Use Advanced > Strict remote ID only when the gateway requires a fixed IKE
    identity.
 3. Start with UDP transport and IKE port 500.
-4. Put split routes in Advanced when the FortiGate does not push the intended
-   route set.
+4. Choose Split tunnel for internal routes only or Full tunnel for all traffic.
+   Split tunnel requires at least one remote route; the editor can add the SEE
+   FortiGate route preset list in one click. Full tunnel requires an
+   IPsec-to-WAN FortiGate firewall policy with NAT enabled.
 5. Use Test profile render before connecting.
 6. Connect. GIC detects the active `swanctl` config root, writes
    `conf.d/gic-<uuid>.conf` through the helper, runs `swanctl --load-all`,

@@ -45,7 +45,7 @@ def _list_value(values: list[str]) -> str:
 
 
 def _remote_ts(profile: VpnProfile) -> str:
-    if profile.split_tunnel_enabled and profile.remote_routes:
+    if profile.split_tunnel_enabled:
         return _list_value(profile.remote_routes)
     return "0.0.0.0/0"
 

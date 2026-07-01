@@ -97,6 +97,7 @@ def test_backend_vici_commands_use_privileged_helper(monkeypatch: pytest.MonkeyP
         eap_identity="alice",
         psk="psk",
         password="password",
+        remote_routes=["192.168.20.0/24"],
     )
     monkeypatch.setattr(commands, "run_command", fake_run)
 

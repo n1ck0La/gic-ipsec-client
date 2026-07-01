@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from gic_ipsec_client.backend.diagnostics import (
+    DNS_SERVER_MISSING_HINT,
     PSK_IDENTITY_MISMATCH_HINT,
+    SPLIT_TUNNEL_REMOTE_TS_MISMATCH_HINT,
     diagnostic_hints,
     redact_mapping,
     redact_text,
 )
+from gic_ipsec_client.backend.models import VpnProfile
 
 
 def test_diagnostics_redaction_catches_password_patterns() -> None:
@@ -68,3 +71,26 @@ def test_diagnostics_hint_for_shared_key_identity_mismatch() -> None:
     )
 
     assert hints == [PSK_IDENTITY_MISMATCH_HINT]
+
+
+def test_diagnostics_detects_split_full_tunnel_mismatch() -> None:
+    profile = VpnProfile(
+        id="00000000-0000-4000-8000-000000000001",
+        profile_name="Split VPN",
+        gateway_fqdn_or_ip="vpn.example.com",
+        username="alice",
+        eap_identity="alice",
+        psk="psk",
+        password="password",
+        remote_routes=["192.168.20.0/24"],
+        dns_servers=["192.168.20.1"],
+    )
+
+    hints = diagnostic_hints(
+        profile=profile,
+        list_conns_output="remote: 0.0.0.0/0",
+        resolved_status="Global\n",
+    )
+
+    assert SPLIT_TUNNEL_REMOTE_TS_MISMATCH_HINT in hints
+    assert DNS_SERVER_MISSING_HINT in hints
