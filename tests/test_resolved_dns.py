@@ -10,8 +10,10 @@ from gic_ipsec_client.backend.resolved import (
     apply_resolved_dns,
     build_resolvectl_apply_commands,
     load_dns_apply_report,
+    load_resolved_plan,
     revert_resolved_dns,
     save_resolved_plan,
+    verify_resolved_dns_after_disconnect,
 )
 
 
@@ -194,6 +196,95 @@ def test_split_dns_falls_back_to_physical_interface_when_lo_query_uses_ens18(
     assert report["verified_interface"] == "ens18"
 
 
+def test_dns_snapshot_is_created_before_applying_vpn_dns_to_physical_interface(
+    tmp_path: Path,
+) -> None:
+    profile_id = "00000000-0000-4000-8000-000000000001"
+    calls: list[tuple[str, ...]] = []
+    nmcli_snapshot_args = (
+        "nmcli",
+        "-t",
+        "-f",
+        "GENERAL.CONNECTION,IP4.DNS,IP4.DOMAIN,IP4.SEARCHES",
+        "device",
+        "show",
+        "ens18",
+    )
+
+    class ActiveCompleted:
+        stdout = "active\n"
+        stderr = ""
+        returncode = 0
+
+    class EmptyCompleted:
+        stdout = ""
+        stderr = ""
+        returncode = 0
+
+    def fake_run(spec: commands.CommandSpec) -> object:
+        calls.append(spec.args)
+        if spec.args == ("systemctl", "is-active", "systemd-resolved"):
+            return ActiveCompleted()
+        if spec.args == ("ip", "route", "get", "1.1.1.1"):
+            completed = EmptyCompleted()
+            completed.stdout = "1.1.1.1 via 10.0.0.1 dev ens18 src 10.0.0.2\n"
+            return completed
+        if spec.args == ("resolvectl", "status", "ens18"):
+            completed = EmptyCompleted()
+            if ("resolvectl", "dns", "ens18", "192.168.88.203") in calls:
+                completed.stdout = "Link 2 (ens18)\nDNS Servers: 192.168.88.203\n"
+            else:
+                completed.stdout = """
+                Link 2 (ens18)
+                    DNS Servers: 9.9.9.9 8.8.8.8
+                    DefaultRoute setting: yes
+                """
+            return completed
+        if spec.args == nmcli_snapshot_args:
+            completed = EmptyCompleted()
+            completed.stdout = "GENERAL.CONNECTION:Wired connection 1\nIP4.DNS[1]:9.9.9.9\n"
+            return completed
+        if spec.args == ("resolvectl", "query", "nextcloud.see-radars.com"):
+            completed = EmptyCompleted()
+            if ("resolvectl", "dns", "ens18", "192.168.88.203") in calls:
+                completed.stdout = "nextcloud.see-radars.com: 192.168.88.65\n-- link: ens18\n"
+            else:
+                completed.stdout = "nextcloud.see-radars.com: 185.70.111.155\n-- link: ens18\n"
+            return completed
+        if spec.args == ("resolvectl", "query", "srv-dc-01.seetech.local"):
+            completed = EmptyCompleted()
+            if ("resolvectl", "dns", "ens18", "192.168.88.203") in calls:
+                completed.stdout = "srv-dc-01.seetech.local: 192.168.88.203\n-- link: ens18\n"
+            else:
+                completed.returncode = 1
+            return completed
+        if spec.args[0] == "dig":
+            completed = EmptyCompleted()
+            completed.stdout = "192.168.88.65\n"
+            return completed
+        return EmptyCompleted()
+
+    errors = apply_resolved_dns(
+        profile_id=profile_id,
+        dns_servers=["192.168.88.203"],
+        search_domains=["see-radars.com", "seetech.local"],
+        split_tunnel_enabled=True,
+        run_command=fake_run,
+        state_root=tmp_path,
+    )
+
+    assert errors == []
+    physical_status_index = calls.index(("resolvectl", "status", "ens18"))
+    physical_apply_index = calls.index(("resolvectl", "dns", "ens18", "192.168.88.203"))
+    assert physical_status_index < physical_apply_index
+    plan = load_resolved_plan(profile_id, state_root=tmp_path)
+    assert plan is not None
+    assert plan.interface == "ens18"
+    assert plan.dns_servers == ("9.9.9.9", "8.8.8.8")
+    assert plan.default_route is True
+    assert plan.vpn_dns_servers == ("192.168.88.203",)
+
+
 def test_disconnect_reverts_lo_for_split_dns(tmp_path: Path) -> None:
     profile_id = "00000000-0000-4000-8000-000000000001"
     save_resolved_plan(
@@ -235,9 +326,11 @@ def test_disconnect_reverts_saved_physical_dns_interface(tmp_path: Path) -> None
         ResolvedDnsPlan(
             profile_id=profile_id,
             interface="ens18",
-            dns_servers=("192.168.88.203",),
-            search_domains=("see-radars.com", "seetech.local"),
+            dns_servers=("9.9.9.9", "8.8.8.8"),
+            search_domains=(),
             split_tunnel_enabled=True,
+            default_route=True,
+            vpn_dns_servers=("192.168.88.203",),
         ),
         state_root=tmp_path,
     )
@@ -256,13 +349,126 @@ def test_disconnect_reverts_saved_physical_dns_interface(tmp_path: Path) -> None
 
     assert errors == []
     assert calls == [
-        ("resolvectl", "revert", "ens18"),
+        ("resolvectl", "dns", "ens18", "9.9.9.9", "8.8.8.8"),
+        ("resolvectl", "domain", "ens18", ""),
+        ("resolvectl", "default-route", "ens18", "yes"),
+        ("resolvectl", "flush-caches"),
+        ("resolvectl", "reset-server-features"),
         ("resolvectl", "revert", "lo"),
         ("resolvectl", "revert", "seeipsec0"),
         ("ip", "link", "show", "seeipsec0"),
         ("resolvectl", "flush-caches"),
         ("resolvectl", "reset-server-features"),
     ]
+
+
+def test_disconnect_reapply_fallback_handles_resolvectl_restore_failure(tmp_path: Path) -> None:
+    profile_id = "00000000-0000-4000-8000-000000000001"
+    save_resolved_plan(
+        ResolvedDnsPlan(
+            profile_id=profile_id,
+            interface="ens18",
+            dns_servers=("9.9.9.9", "8.8.8.8"),
+            search_domains=(),
+            split_tunnel_enabled=True,
+            default_route=True,
+            vpn_dns_servers=("192.168.88.203",),
+        ),
+        state_root=tmp_path,
+    )
+    calls: list[tuple[str, ...]] = []
+
+    class FailedCompleted(Completed):
+        returncode = 1
+        stderr = (
+            "Failed to revert interface configuration: Could not activate remote peer "
+            "'org.freedesktop.network1': activation request failed: unknown unit"
+        )
+
+    class MissingCompleted(Completed):
+        returncode = 1
+
+    def fake_run(spec: commands.CommandSpec) -> Completed:
+        calls.append(spec.args)
+        if spec.args == ("resolvectl", "dns", "ens18", "9.9.9.9", "8.8.8.8"):
+            return FailedCompleted()
+        if spec.args == ("ip", "link", "show", "seeipsec0"):
+            return MissingCompleted()
+        return Completed()
+
+    errors = revert_resolved_dns(profile_id, run_command=fake_run, state_root=tmp_path)
+
+    assert errors == []
+    assert ("resolvectl", "revert", "ens18") not in calls
+    assert ("nmcli", "dev", "reapply", "ens18") in calls
+
+
+def test_disconnect_verification_flags_leftover_vpn_dns(tmp_path: Path) -> None:
+    profile_id = "00000000-0000-4000-8000-000000000001"
+    save_resolved_plan(
+        ResolvedDnsPlan(
+            profile_id=profile_id,
+            interface="ens18",
+            dns_servers=("9.9.9.9", "8.8.8.8"),
+            search_domains=(),
+            split_tunnel_enabled=True,
+            vpn_dns_servers=("192.168.88.203",),
+        ),
+        state_root=tmp_path,
+    )
+
+    class QueryCompleted(Completed):
+        stdout = "ok\n"
+
+    class StatusCompleted(Completed):
+        stdout = "Link 2 (ens18)\nDNS Servers: 192.168.88.203\n"
+
+    def fake_run(spec: commands.CommandSpec) -> Completed:
+        if spec.args == ("resolvectl", "status", "ens18"):
+            return StatusCompleted()
+        return QueryCompleted()
+
+    errors = verify_resolved_dns_after_disconnect(
+        profile_id,
+        run_command=fake_run,
+        state_root=tmp_path,
+    )
+
+    assert "VPN DNS server 192.168.88.203 is still configured on ens18." in errors
+
+
+def test_disconnect_verification_allows_vpn_dns_if_it_existed_before(tmp_path: Path) -> None:
+    profile_id = "00000000-0000-4000-8000-000000000001"
+    save_resolved_plan(
+        ResolvedDnsPlan(
+            profile_id=profile_id,
+            interface="ens18",
+            dns_servers=("192.168.88.203",),
+            search_domains=(),
+            split_tunnel_enabled=True,
+            vpn_dns_servers=("192.168.88.203",),
+        ),
+        state_root=tmp_path,
+    )
+
+    class QueryCompleted(Completed):
+        stdout = "ok\n"
+
+    class StatusCompleted(Completed):
+        stdout = "Link 2 (ens18)\nDNS Servers: 192.168.88.203\n"
+
+    def fake_run(spec: commands.CommandSpec) -> Completed:
+        if spec.args == ("resolvectl", "status", "ens18"):
+            return StatusCompleted()
+        return QueryCompleted()
+
+    errors = verify_resolved_dns_after_disconnect(
+        profile_id,
+        run_command=fake_run,
+        state_root=tmp_path,
+    )
+
+    assert errors == []
 
 
 def test_disconnect_deletes_dummy_interface_when_present(tmp_path: Path) -> None:

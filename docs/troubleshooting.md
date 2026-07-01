@@ -32,8 +32,10 @@ nmcli device show
   route-only VPN DNS domains to `lo` with `resolvectl`. If verification shows
   queries still using the physical link, GIC snapshots the default interface,
   applies the route-only VPN DNS domains there, flushes caches, and resets
-  resolver server features. The old `seeipsec0` dummy link is retained only for
-  cleanup and diagnostics of earlier runs.
+  resolver server features. On disconnect, GIC restores the saved DNS servers,
+  domains, and default-route state before terminating the IKE_SA. If explicit
+  restore fails, it runs `nmcli dev reapply <interface>`. The old `seeipsec0`
+  dummy link is retained only for cleanup and diagnostics of earlier runs.
 
 ## FortiGate-Side Hints
 

@@ -34,6 +34,12 @@ def build_parser() -> argparse.ArgumentParser:
     disconnect.add_argument("--profile-uuid", required=True)
     disconnect.add_argument("--config-root", default="")
 
+    reconnect = subcommands.add_parser(
+        "reconnect-network-interface",
+        help="Reconnect the saved NetworkManager interface after DNS rollback failure.",
+    )
+    reconnect.add_argument("--profile-uuid", required=True)
+
     status = subcommands.add_parser("status-profile", help="Print profile status.")
     status.add_argument("--profile-uuid", required=True)
     status.add_argument("--config-root", default="")
@@ -83,6 +89,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "disconnect-profile":
             privileged.ensure_runtime_tools()
             return privileged.disconnect_profile(args.profile_uuid)
+        if args.command == "reconnect-network-interface":
+            return privileged.reconnect_network_interface(args.profile_uuid)
         if args.command == "status-profile":
             privileged.ensure_runtime_tools()
             print(privileged.status_profile(args.profile_uuid))

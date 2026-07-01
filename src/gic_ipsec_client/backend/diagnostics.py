@@ -54,6 +54,9 @@ DUMMY_DNS_IGNORED_HINT = (
     "systemd-resolved ignored the dummy VPN DNS link. Applying DNS to the physical "
     "interface is required on this Fedora policy-based IPsec setup."
 )
+VPN_DNS_ROLLBACK_FAILED_HINT = (
+    "VPN DNS rollback failed. Restore DNS using saved snapshot or run nmcli dev reapply."
+)
 STRONGSWAN_DNS_HOOK_NONFATAL_HINT = (
     "strongSwan resolvconf DNS hook failed, but app-managed resolvectl DNS succeeded."
 )
@@ -112,6 +115,7 @@ def diagnostic_hints(
     dns_apply_report: dict[str, Any] | None = None,
     internal_query_output: str = "",
     dummy_resolved_status: str = "",
+    default_interface_status: str = "",
 ) -> list[str]:
     combined = "\n".join(texts)
     hints: list[str] = []
@@ -140,6 +144,17 @@ def diagnostic_hints(
         )
     ):
         hints.append(DUMMY_DNS_IGNORED_HINT)
+    if (
+        profile
+        and dns_apply_report
+        and dns_apply_report.get("dns_apply_ran")
+        and vpn_dns_rollback_failed(
+            profile=profile,
+            list_sas_output=combined + "\n" + list_conns_output,
+            resolved_status=default_interface_status or resolved_status,
+        )
+    ):
+        hints.append(VPN_DNS_ROLLBACK_FAILED_HINT)
     allowed_links = [LOOPBACK_DNS_INTERFACE, DUMMY_DNS_INTERFACE]
     if dns_apply_report:
         verified_interface = str(dns_apply_report.get("verified_interface", "") or "")
@@ -206,6 +221,17 @@ def dummy_dns_link_ignored(
     if dns_servers and not all(server in dummy_status for server in dns_servers):
         return False
     return "ens18" in dns_query_links(query_output)
+
+
+def vpn_dns_rollback_failed(
+    *,
+    profile: VpnProfile,
+    list_sas_output: str,
+    resolved_status: str,
+) -> bool:
+    if profile.connection_name in list_sas_output:
+        return False
+    return any(server in resolved_status for server in profile.dns_servers)
 
 
 def _run_internal_dns_queries(names: list[str], dns_servers: list[str]) -> str:
@@ -393,6 +419,7 @@ def collect_diagnostics(
         dns_apply_report=dns_apply_report,
         internal_query_output=internal_dns_query_output,
         dummy_resolved_status=dummy_status_output,
+        default_interface_status=default_status_output,
     )
     sections = {
         "swanctl_config_and_vici": _format_swanctl_diagnostics(swanctl_diagnostics),
@@ -407,6 +434,11 @@ def collect_diagnostics(
         "resolvectl_status_seeipsec0": dummy_status_output,
         "resolvectl_status_default_interface": default_status_output,
         "dns_apply_report": json.dumps(dns_apply_report, indent=2, sort_keys=True),
+        "dns_state_snapshot": json.dumps(
+            swanctl_diagnostics.get("dns_state_snapshot", {}),
+            indent=2,
+            sort_keys=True,
+        ),
         "resolvectl_query_internal_domains": internal_dns_query_output,
         "lo_route_only_domains_configured": str(lo_route_only_domains),
         "route_table": _run_optional(("ip", "route"), timeout_seconds=10),
@@ -428,6 +460,7 @@ def collect_diagnostics(
         "dns_apply_interface": dns_apply_report.get("verified_interface", ""),
         "dns_apply_fallback_used": dns_apply_report.get("fallback_used", False),
         "default_dns_interface": default_interface,
+        "dns_state_snapshot_saved": bool(swanctl_diagnostics.get("dns_state_snapshot", {})),
     }
     summary["swanctl"] = {
         "selected_config_root": swanctl_diagnostics.get("selected_swanctl_config_root", ""),
@@ -522,6 +555,7 @@ def export_debug_bundle(
             )
             + "\n",
             "dns-apply-report.json": report.sections.get("dns_apply_report", "") + "\n",
+            "dns-state-snapshot.json": report.sections.get("dns_state_snapshot", "") + "\n",
             "resolvectl-query-internal-domains.txt": report.sections.get(
                 "resolvectl_query_internal_domains",
                 "",

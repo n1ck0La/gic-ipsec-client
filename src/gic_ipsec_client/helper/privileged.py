@@ -16,11 +16,17 @@ from gic_ipsec_client.backend.resolved import (
     LOOPBACK_DNS_INTERFACE,
     apply_resolved_dns,
     cleanup_dns_apply_report,
+    flush_resolved_dns_caches,
     ip_route_get,
     load_dns_apply_report,
+    load_resolved_plan,
     parse_default_interface,
     resolvectl_status_interface,
     revert_resolved_dns,
+    verify_resolved_dns_after_disconnect,
+)
+from gic_ipsec_client.backend.resolved import (
+    reconnect_network_interface as reconnect_saved_network_interface,
 )
 from gic_ipsec_client.backend.swanctl_paths import (
     KNOWN_SWANCTL_ROOTS,
@@ -229,12 +235,29 @@ def connect_profile(profile_id: str, *, config_root_override: str = "") -> int:
 
 def disconnect_profile(profile_id: str) -> int:
     validate_uuid(profile_id)
+    dns_errors = revert_resolved_dns(
+        profile_id,
+        run_command=commands.run_command,
+        cleanup_on_success=False,
+    )
     completed = commands.run_command(commands.swanctl_terminate(f"gic-{profile_id}"))
-    dns_errors = revert_resolved_dns(profile_id, run_command=commands.run_command)
+    post_flush_errors = flush_resolved_dns_caches(run_command=commands.run_command)
+    verify_errors = verify_resolved_dns_after_disconnect(
+        profile_id,
+        run_command=commands.run_command,
+    )
     if completed.returncode != 0:
         return completed.returncode
-    if dns_errors:
-        raise HelperError("\n".join(dns_errors))
+    errors = [*dns_errors, *post_flush_errors, *verify_errors]
+    if errors:
+        raise HelperError("\n".join(errors))
+    return 0
+
+
+def reconnect_network_interface(profile_id: str) -> int:
+    messages = reconnect_saved_network_interface(profile_id, run_command=commands.run_command)
+    if messages:
+        raise HelperError("\n".join(messages))
     return 0
 
 
@@ -287,6 +310,7 @@ def swanctl_diagnostics(
         if profile_id
         else None
     )
+    dns_state_snapshot = load_resolved_plan(profile_id) if profile_id else None
     return {
         "selected_swanctl_config_root": str(layout.root),
         "selection_source": layout.source,
@@ -304,6 +328,7 @@ def swanctl_diagnostics(
         "list_sas_returncode": list_sas_completed.returncode,
         "list_sas_output": _completed_message(list_sas_completed),
         "dns_apply_report": load_dns_apply_report(profile_id) if profile_id else {},
+        "dns_state_snapshot": dns_state_snapshot.to_dict() if dns_state_snapshot else {},
         "default_dns_interface": default_interface,
         "ip_route_get_1_1_1_1_returncode": default_route_completed.returncode,
         "ip_route_get_1_1_1_1_output": _completed_message(default_route_completed),

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -27,7 +28,7 @@ FORTIGATE_ROUTE_PRESETS = (
 )
 LOOPBACK_DNS_INTERFACE = "lo"
 DUMMY_DNS_INTERFACE = "seeipsec0"
-RESOLVED_STATE_ROOT = Path("/run/gic-ipsec-client/resolved")
+RESOLVED_STATE_ROOT = Path("/run/see-ipsec-client")
 RunCommand = Callable[[commands.CommandSpec], object]
 INTERNAL_DNS_TEST_HOSTS = {
     "see-radars.com": "nextcloud.see-radars.com",
@@ -39,6 +40,19 @@ EXPECTED_INTERNAL_DNS_RESULTS = {
 }
 
 
+def _optional_bool(value: object) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "+defaultroute"}:
+        return True
+    if text in {"0", "false", "no", "-defaultroute"}:
+        return False
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class ResolvedDnsPlan:
     profile_id: str
@@ -47,26 +61,51 @@ class ResolvedDnsPlan:
     search_domains: tuple[str, ...]
     split_tunnel_enabled: bool
     snapshot: str = ""
+    default_route: bool | None = None
+    dhcp_managed: bool = False
+    fallback_dns_servers: tuple[str, ...] = ()
+    vpn_dns_servers: tuple[str, ...] = ()
+    vpn_search_domains: tuple[str, ...] = ()
+    active_connection: str = ""
 
     def to_dict(self) -> dict[str, object]:
         return {
             "profile_id": self.profile_id,
             "interface": self.interface,
             "dns_servers": list(self.dns_servers),
+            "domains": list(self.search_domains),
             "search_domains": list(self.search_domains),
             "split_tunnel_enabled": self.split_tunnel_enabled,
+            "default_route": self.default_route,
+            "dhcp_managed": self.dhcp_managed,
+            "fallback_dns_servers": list(self.fallback_dns_servers),
+            "vpn_dns_servers": list(self.vpn_dns_servers),
+            "vpn_search_domains": list(self.vpn_search_domains),
+            "active_connection": self.active_connection,
+            "raw_status": self.snapshot,
             "snapshot": self.snapshot,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> ResolvedDnsPlan:
+        raw_domains = data.get("domains", data.get("search_domains", [])) or []
         return cls(
             profile_id=str(data.get("profile_id", "")),
             interface=str(data.get("interface", "")),
             dns_servers=tuple(str(item) for item in data.get("dns_servers", []) or []),
-            search_domains=tuple(str(item) for item in data.get("search_domains", []) or []),
+            search_domains=tuple(str(item) for item in raw_domains),
             split_tunnel_enabled=bool(data.get("split_tunnel_enabled", True)),
-            snapshot=str(data.get("snapshot", "")),
+            snapshot=str(data.get("raw_status", data.get("snapshot", ""))),
+            default_route=_optional_bool(data.get("default_route")),
+            dhcp_managed=bool(data.get("dhcp_managed", False)),
+            fallback_dns_servers=tuple(
+                str(item) for item in data.get("fallback_dns_servers", []) or []
+            ),
+            vpn_dns_servers=tuple(str(item) for item in data.get("vpn_dns_servers", []) or []),
+            vpn_search_domains=tuple(
+                str(item) for item in data.get("vpn_search_domains", []) or []
+            ),
+            active_connection=str(data.get("active_connection", "")),
         )
 
 
@@ -102,8 +141,60 @@ def resolvectl_reset_server_features() -> commands.CommandSpec:
     return commands.CommandSpec(("resolvectl", "reset-server-features"), timeout_seconds=15)
 
 
+def resolvectl_dns(
+    interface: str,
+    dns_servers: list[str] | tuple[str, ...],
+) -> commands.CommandSpec:
+    return commands.CommandSpec(
+        ("resolvectl", "dns", interface, *tuple(dns_servers)),
+        timeout_seconds=15,
+    )
+
+
+def resolvectl_domain(
+    interface: str,
+    domains: list[str] | tuple[str, ...],
+) -> commands.CommandSpec:
+    args = ("resolvectl", "domain", interface, *tuple(domains or ("",)))
+    return commands.CommandSpec(args, timeout_seconds=15)
+
+
+def resolvectl_default_route(interface: str, enabled: bool) -> commands.CommandSpec:
+    return commands.CommandSpec(
+        ("resolvectl", "default-route", interface, "yes" if enabled else "no"),
+        timeout_seconds=15,
+    )
+
+
 def dig_short(server: str, name: str) -> commands.CommandSpec:
     return commands.CommandSpec(("dig", f"@{server}", name, "+short"), timeout_seconds=15)
+
+
+def nmcli_device_show(interface: str) -> commands.CommandSpec:
+    return commands.CommandSpec(
+        (
+            "nmcli",
+            "-t",
+            "-f",
+            "GENERAL.CONNECTION,IP4.DNS,IP4.DOMAIN,IP4.SEARCHES",
+            "device",
+            "show",
+            interface,
+        ),
+        timeout_seconds=15,
+    )
+
+
+def nmcli_device_reapply(interface: str) -> commands.CommandSpec:
+    return commands.CommandSpec(("nmcli", "dev", "reapply", interface), timeout_seconds=30)
+
+
+def nmcli_connection_down(connection_name: str) -> commands.CommandSpec:
+    return commands.CommandSpec(("nmcli", "con", "down", connection_name), timeout_seconds=45)
+
+
+def nmcli_connection_up(connection_name: str) -> commands.CommandSpec:
+    return commands.CommandSpec(("nmcli", "con", "up", connection_name), timeout_seconds=45)
 
 
 def ip_link_add_dummy(interface: str = DUMMY_DNS_INTERFACE) -> commands.CommandSpec:
@@ -130,6 +221,10 @@ def parse_default_interface(route_get_output: str) -> str:
     return match.group(1) if match else ""
 
 
+def is_ssh_session() -> bool:
+    return any(os.environ.get(name) for name in ("SSH_CLIENT", "SSH_CONNECTION", "SSH_TTY"))
+
+
 def internal_dns_test_names(search_domains: list[str] | tuple[str, ...]) -> list[str]:
     names: list[str] = []
     for domain in search_domains:
@@ -138,6 +233,86 @@ def internal_dns_test_names(search_domains: list[str] | tuple[str, ...]) -> list
             continue
         names.append(INTERNAL_DNS_TEST_HOSTS.get(clean, clean))
     return list(dict.fromkeys(names))
+
+
+def parse_resolvectl_link_status(output: str) -> dict[str, object]:
+    dns_servers: list[str] = []
+    domains: list[str] = []
+    default_route: bool | None = None
+    continuation: str | None = None
+
+    for raw_line in output.splitlines():
+        stripped = raw_line.strip()
+        if not stripped:
+            continuation = None
+            continue
+        if stripped.startswith("DNS Servers:"):
+            dns_servers.extend(stripped.removeprefix("DNS Servers:").split())
+            continuation = "dns"
+            continue
+        if stripped.startswith("DNS Domain:"):
+            domains.extend(stripped.removeprefix("DNS Domain:").split())
+            continuation = "domain"
+            continue
+        if stripped.startswith("DefaultRoute setting:"):
+            default_route = _optional_bool(stripped.removeprefix("DefaultRoute setting:"))
+            continuation = None
+            continue
+        if stripped.startswith("Protocols:"):
+            if "+DefaultRoute" in stripped:
+                default_route = True
+            elif "-DefaultRoute" in stripped:
+                default_route = False
+            continuation = None
+            continue
+        if ":" not in stripped and raw_line[:1].isspace():
+            if continuation == "dns":
+                dns_servers.extend(stripped.split())
+            elif continuation == "domain":
+                domains.extend(stripped.split())
+        else:
+            continuation = None
+
+    return {
+        "dns_servers": list(dict.fromkeys(dns_servers)),
+        "domains": list(dict.fromkeys(domains)),
+        "default_route": default_route,
+    }
+
+
+def parse_nmcli_device_snapshot(output: str) -> dict[str, object]:
+    active_connection = ""
+    fallback_dns: list[str] = []
+    domains: list[str] = []
+    for raw_line in output.splitlines():
+        if ":" not in raw_line:
+            continue
+        key, value = raw_line.split(":", 1)
+        value = value.replace(r"\:", ":").strip()
+        if key == "GENERAL.CONNECTION":
+            active_connection = value
+        elif key.startswith("IP4.DNS") and value:
+            fallback_dns.append(value)
+        elif key.startswith(("IP4.DOMAIN", "IP4.SEARCHES")) and value:
+            domains.extend(value.split())
+    return {
+        "active_connection": active_connection,
+        "fallback_dns_servers": list(dict.fromkeys(fallback_dns)),
+        "fallback_domains": list(dict.fromkeys(domains)),
+    }
+
+
+def build_resolvectl_restore_commands(plan: ResolvedDnsPlan) -> list[commands.CommandSpec]:
+    if not plan.interface or not plan.dns_servers:
+        return []
+    default_route = True if plan.default_route is None else plan.default_route
+    return [
+        resolvectl_dns(plan.interface, plan.dns_servers),
+        resolvectl_domain(plan.interface, plan.search_domains),
+        resolvectl_default_route(plan.interface, default_route),
+        commands.CommandSpec(("resolvectl", "flush-caches"), timeout_seconds=15),
+        resolvectl_reset_server_features(),
+    ]
 
 
 def build_resolvectl_apply_commands(
@@ -151,12 +326,7 @@ def build_resolvectl_apply_commands(
 ) -> list[commands.CommandSpec]:
     if not interface or not dns_servers:
         return []
-    specs = [
-        commands.CommandSpec(
-            ("resolvectl", "dns", interface, *tuple(dns_servers)),
-            timeout_seconds=15,
-        )
-    ]
+    specs = [resolvectl_dns(interface, dns_servers)]
     if split_tunnel_enabled:
         domains: list[str] = []
         for domain in search_domains:
@@ -165,29 +335,13 @@ def build_resolvectl_apply_commands(
                 continue
             domains.append(f"~{clean}")
         if domains:
-            specs.append(
-                commands.CommandSpec(
-                    ("resolvectl", "domain", interface, *tuple(domains)),
-                    timeout_seconds=15,
-                )
-            )
-        specs.append(
-            commands.CommandSpec(
-                ("resolvectl", "default-route", interface, split_default_route),
-                timeout_seconds=15,
-            )
-        )
+            specs.append(resolvectl_domain(interface, domains))
+        specs.append(resolvectl_default_route(interface, split_default_route == "yes"))
     else:
         specs.extend(
             [
-                commands.CommandSpec(
-                    ("resolvectl", "domain", interface, "~."),
-                    timeout_seconds=15,
-                ),
-                commands.CommandSpec(
-                    ("resolvectl", "default-route", interface, "yes"),
-                    timeout_seconds=15,
-                ),
+                resolvectl_domain(interface, ("~.",)),
+                resolvectl_default_route(interface, True),
             ]
         )
     specs.append(commands.CommandSpec(("resolvectl", "flush-caches"), timeout_seconds=15))
@@ -207,7 +361,7 @@ def build_resolvectl_revert_commands(interface: str) -> list[commands.CommandSpe
 
 def resolved_state_path(profile_id: str, *, state_root: Path = RESOLVED_STATE_ROOT) -> Path:
     validate_uuid(profile_id)
-    return state_root / f"{profile_id}.json"
+    return state_root / f"dns-state-{profile_id}.json"
 
 
 def save_resolved_plan(plan: ResolvedDnsPlan, *, state_root: Path = RESOLVED_STATE_ROOT) -> Path:
@@ -243,7 +397,7 @@ def cleanup_resolved_plan(profile_id: str, *, state_root: Path = RESOLVED_STATE_
 
 def dns_apply_report_path(profile_id: str, *, state_root: Path = RESOLVED_STATE_ROOT) -> Path:
     validate_uuid(profile_id)
-    return state_root / f"{profile_id}.dns-apply.json"
+    return state_root / f"dns-apply-{profile_id}.json"
 
 
 def save_dns_apply_report(
@@ -345,46 +499,159 @@ def revert_resolved_dns(
     *,
     run_command: RunCommand = commands.run_command,
     state_root: Path = RESOLVED_STATE_ROOT,
+    cleanup_on_success: bool = True,
 ) -> list[str]:
     validate_uuid(profile_id)
     messages: list[str] = []
     previous_plan = load_resolved_plan(profile_id, state_root=state_root)
-    interfaces = list(
+    report = load_dns_apply_report(profile_id, state_root=state_root)
+    restored_physical_interface = False
+    if previous_plan and previous_plan.interface not in {
+        LOOPBACK_DNS_INTERFACE,
+        DUMMY_DNS_INTERFACE,
+    }:
+        restored_physical_interface = True
+        messages.extend(
+            _restore_physical_dns(
+                previous_plan,
+                run_command=run_command,
+                report=report,
+            )
+        )
+
+    cleanup_interfaces = list(
         dict.fromkeys(
             item
             for item in (
-                previous_plan.interface if previous_plan else "",
+                previous_plan.interface
+                if previous_plan
+                and previous_plan.interface in {LOOPBACK_DNS_INTERFACE, DUMMY_DNS_INTERFACE}
+                else "",
                 LOOPBACK_DNS_INTERFACE,
                 DUMMY_DNS_INTERFACE,
             )
             if item
         )
     )
-    for interface in interfaces:
+    for interface in cleanup_interfaces:
         for spec in build_resolvectl_revert_commands(interface)[:1]:
             completed = run_command(spec)
+            _record_completed(report, spec, completed, phase="rollback")
             if getattr(completed, "returncode", 1) != 0:
                 messages.append(_completed_message(completed) or f"{' '.join(spec.args)} failed.")
     show_dummy = run_command(ip_link_show(DUMMY_DNS_INTERFACE))
+    _record_completed(report, ip_link_show(DUMMY_DNS_INTERFACE), show_dummy, phase="rollback")
     if getattr(show_dummy, "returncode", 1) == 0:
         delete_spec = ip_link_delete(DUMMY_DNS_INTERFACE)
         delete_dummy = run_command(delete_spec)
+        _record_completed(report, delete_spec, delete_dummy, phase="rollback")
         if getattr(delete_dummy, "returncode", 1) != 0:
             messages.append(
                 _completed_message(delete_dummy) or f"{' '.join(delete_spec.args)} failed."
             )
     for spec in [commands.CommandSpec(("resolvectl", "flush-caches"), timeout_seconds=15)]:
         completed = run_command(spec)
+        _record_completed(report, spec, completed, phase="rollback")
         if getattr(completed, "returncode", 1) != 0:
             messages.append(_completed_message(completed) or f"{' '.join(spec.args)} failed.")
     reset_spec = resolvectl_reset_server_features()
     reset_completed = run_command(reset_spec)
+    _record_completed(report, reset_spec, reset_completed, phase="rollback")
     if getattr(reset_completed, "returncode", 1) != 0:
         messages.append(
             _completed_message(reset_completed) or f"{' '.join(reset_spec.args)} failed."
         )
+    if restored_physical_interface:
+        notes = report.setdefault("notes", [])
+        if isinstance(notes, list):
+            notes.append("Restored DNS before terminating the IKE_SA.")
+    save_dns_apply_report(profile_id, report, state_root=state_root)
+    if not messages and cleanup_on_success:
+        cleanup_resolved_plan(profile_id, state_root=state_root)
+    return messages
+
+
+def flush_resolved_dns_caches(
+    *,
+    run_command: RunCommand = commands.run_command,
+) -> list[str]:
+    messages: list[str] = []
+    for spec in (
+        commands.CommandSpec(("resolvectl", "flush-caches"), timeout_seconds=15),
+        resolvectl_reset_server_features(),
+    ):
+        completed = _run_optional_command(spec, run_command=run_command)
+        if getattr(completed, "returncode", 1) != 0:
+            messages.append(_completed_message(completed) or f"{' '.join(spec.args)} failed.")
+    return messages
+
+
+def verify_resolved_dns_after_disconnect(
+    profile_id: str,
+    *,
+    run_command: RunCommand = commands.run_command,
+    state_root: Path = RESOLVED_STATE_ROOT,
+) -> list[str]:
+    validate_uuid(profile_id)
+    plan = load_resolved_plan(profile_id, state_root=state_root)
+    if plan is None or not plan.interface:
+        return []
+    report = load_dns_apply_report(profile_id, state_root=state_root)
+    messages: list[str] = []
+
+    status_spec = resolvectl_status_interface(plan.interface)
+    status = _run_and_record(
+        status_spec,
+        run_command=run_command,
+        report=report,
+        phase="verify-disconnect",
+    )
+    status_text = _completed_message(status)
+    for vpn_server in plan.vpn_dns_servers:
+        if vpn_server and vpn_server not in plan.dns_servers and vpn_server in status_text:
+            messages.append(
+                f"VPN DNS server {vpn_server} is still configured on {plan.interface}."
+            )
+
+    for spec in (
+        resolvectl_query("i.ua"),
+        dig_short("127.0.0.53", "i.ua"),
+        resolvectl_query("google.com"),
+    ):
+        completed = _run_and_record(
+            spec,
+            run_command=run_command,
+            report=report,
+            phase="verify-disconnect",
+        )
+        if getattr(completed, "returncode", 1) != 0 or not _completed_message(completed):
+            messages.append(_completed_message(completed) or f"{' '.join(spec.args)} failed.")
+    save_dns_apply_report(profile_id, report, state_root=state_root)
     if not messages:
         cleanup_resolved_plan(profile_id, state_root=state_root)
+    return messages
+
+
+def reconnect_network_interface(
+    profile_id: str,
+    *,
+    run_command: RunCommand = commands.run_command,
+    state_root: Path = RESOLVED_STATE_ROOT,
+) -> list[str]:
+    validate_uuid(profile_id)
+    if is_ssh_session():
+        return ["Refusing to reconnect the network interface from an SSH session."]
+    plan = load_resolved_plan(profile_id, state_root=state_root)
+    if plan is None or not plan.active_connection:
+        return ["No saved active NetworkManager connection is available for reconnect."]
+    messages: list[str] = []
+    for spec in (
+        nmcli_connection_down(plan.active_connection),
+        nmcli_connection_up(plan.active_connection),
+    ):
+        completed = _run_optional_command(spec, run_command=run_command)
+        if getattr(completed, "returncode", 1) != 0:
+            messages.append(_completed_message(completed) or f"{' '.join(spec.args)} failed.")
     return messages
 
 
@@ -458,6 +725,130 @@ def _record_failed_execution(
     )
 
 
+def _run_and_record(
+    spec: commands.CommandSpec,
+    *,
+    run_command: RunCommand,
+    report: dict[str, object],
+    phase: str,
+) -> object:
+    completed = _run_optional_command(spec, run_command=run_command)
+    _record_completed(report, spec, completed, phase=phase)
+    return completed
+
+
+def _restore_physical_dns(
+    plan: ResolvedDnsPlan,
+    *,
+    run_command: RunCommand,
+    report: dict[str, object],
+) -> list[str]:
+    if plan.dhcp_managed and not plan.dns_servers:
+        reapply = _run_and_record(
+            nmcli_device_reapply(plan.interface),
+            run_command=run_command,
+            report=report,
+            phase="rollback",
+        )
+        if getattr(reapply, "returncode", 1) == 0:
+            return []
+        return [
+            _completed_message(reapply)
+            or f"{' '.join(nmcli_device_reapply(plan.interface).args)} failed."
+        ]
+
+    restore_messages: list[str] = []
+    for spec in build_resolvectl_restore_commands(plan):
+        completed = _run_and_record(
+            spec,
+            run_command=run_command,
+            report=report,
+            phase="rollback",
+        )
+        if getattr(completed, "returncode", 1) != 0:
+            restore_messages.append(
+                _completed_message(completed) or f"{' '.join(spec.args)} failed."
+            )
+    if not restore_messages:
+        return []
+
+    reapply_spec = nmcli_device_reapply(plan.interface)
+    reapply = _run_and_record(
+        reapply_spec,
+        run_command=run_command,
+        report=report,
+        phase="rollback-fallback",
+    )
+    if getattr(reapply, "returncode", 1) == 0:
+        notes = report.setdefault("notes", [])
+        if isinstance(notes, list):
+            notes.append(f"Explicit DNS restore failed; nmcli reapplied {plan.interface}.")
+        return []
+
+    message = _completed_message(reapply) or f"{' '.join(reapply_spec.args)} failed."
+    if not is_ssh_session() and plan.active_connection:
+        message = (
+            f"{message}\nReconnect network interface is available for "
+            f"{plan.interface} ({plan.active_connection})."
+        )
+    return [*restore_messages, message]
+
+
+def _run_optional_command(
+    spec: commands.CommandSpec,
+    *,
+    run_command: RunCommand,
+) -> object:
+    try:
+        return run_command(spec)
+    except (OSError, TimeoutError) as exc:
+        return _SyntheticCompleted(returncode=127, stderr=str(exc))
+
+
+def _snapshot_resolved_dns_plan(
+    *,
+    profile_id: str,
+    interface: str,
+    vpn_dns_servers: list[str],
+    vpn_search_domains: list[str],
+    split_tunnel_enabled: bool,
+    run_command: RunCommand,
+    report: dict[str, object],
+) -> ResolvedDnsPlan:
+    snapshot_spec = resolvectl_status_interface(interface)
+    snapshot_result = _run_optional_command(snapshot_spec, run_command=run_command)
+    _record_completed(report, snapshot_spec, snapshot_result, phase="snapshot")
+    raw_status = _completed_message(snapshot_result)
+    parsed_status = parse_resolvectl_link_status(raw_status)
+
+    nmcli_spec = nmcli_device_show(interface)
+    nmcli_result = _run_optional_command(nmcli_spec, run_command=run_command)
+    _record_completed(report, nmcli_spec, nmcli_result, phase="snapshot")
+    nmcli_snapshot = parse_nmcli_device_snapshot(_completed_message(nmcli_result))
+
+    dns_servers = tuple(str(item) for item in parsed_status["dns_servers"])
+    fallback_dns_servers = tuple(str(item) for item in nmcli_snapshot["fallback_dns_servers"])
+    if not dns_servers and fallback_dns_servers:
+        dns_servers = fallback_dns_servers
+    domains = tuple(str(item) for item in parsed_status["domains"])
+    if not domains:
+        domains = tuple(str(item) for item in nmcli_snapshot["fallback_domains"])
+    return ResolvedDnsPlan(
+        profile_id=profile_id,
+        interface=interface,
+        dns_servers=dns_servers,
+        search_domains=domains,
+        split_tunnel_enabled=split_tunnel_enabled,
+        snapshot=raw_status,
+        default_route=_optional_bool(parsed_status["default_route"]),
+        dhcp_managed=not bool(dns_servers),
+        fallback_dns_servers=fallback_dns_servers,
+        vpn_dns_servers=tuple(vpn_dns_servers),
+        vpn_search_domains=tuple(vpn_search_domains),
+        active_connection=str(nmcli_snapshot["active_connection"]),
+    )
+
+
 def _apply_dns_to_interface(
     *,
     profile_id: str,
@@ -471,17 +862,14 @@ def _apply_dns_to_interface(
     split_default_route: str = "no",
     reset_server_features: bool = False,
 ) -> list[str]:
-    snapshot_spec = resolvectl_status_interface(interface)
-    snapshot_result = run_command(snapshot_spec)
-    _record_completed(report, snapshot_spec, snapshot_result, phase="snapshot")
-    snapshot = _completed_message(snapshot_result)
-    plan = ResolvedDnsPlan(
+    plan = _snapshot_resolved_dns_plan(
         profile_id=profile_id,
         interface=interface,
-        dns_servers=tuple(dns_servers),
-        search_domains=tuple(search_domains),
+        vpn_dns_servers=dns_servers,
+        vpn_search_domains=search_domains,
         split_tunnel_enabled=split_tunnel_enabled,
-        snapshot=snapshot,
+        run_command=run_command,
+        report=report,
     )
     save_resolved_plan(plan, state_root=state_root)
 

@@ -59,6 +59,7 @@ class MainWindow(QMainWindow):
         self.status_panel = StatusPanel()
         self.log_viewer = LogViewer()
         self.last_diagnostics = ""
+        self.last_helper_output = ""
 
         self._build_ui()
         self._load_profiles()
@@ -87,6 +88,9 @@ class MainWindow(QMainWindow):
         connect_button.clicked.connect(self.connect_profile)
         disconnect_button = QPushButton("Disconnect")
         disconnect_button.clicked.connect(self.disconnect_profile)
+        self.reconnect_button = QPushButton("Reconnect network interface")
+        self.reconnect_button.clicked.connect(self.reconnect_network_interface)
+        self.reconnect_button.setVisible(False)
         run_diag_button = QPushButton("Run diagnostics")
         run_diag_button.clicked.connect(self.run_diagnostics)
         export_button = QPushButton("Export sanitized debug bundle")
@@ -98,6 +102,7 @@ class MainWindow(QMainWindow):
         action_buttons = (
             connect_button,
             disconnect_button,
+            self.reconnect_button,
             run_diag_button,
             export_button,
             copy_button,
@@ -262,6 +267,22 @@ class MainWindow(QMainWindow):
         self.status_panel.set_status(
             ConnectionStatus.DISCONNECTED if result == 0 else ConnectionStatus.FAILED
         )
+        self.reconnect_button.setVisible(
+            result != 0 and "Reconnect network interface is available" in self.last_helper_output
+        )
+
+    def reconnect_network_interface(self) -> None:
+        profile = self._selected_profile()
+        if not profile:
+            QMessageBox.information(self, "No profile selected", "Select a profile first.")
+            return
+        result = self._run_helper(
+            "reconnect-network-interface",
+            "--profile-uuid",
+            profile.id,
+        )
+        if result == 0:
+            self.reconnect_button.setVisible(False)
 
     def run_diagnostics(self) -> None:
         report = self.backend.collect_diagnostics(
@@ -316,9 +337,11 @@ class MainWindow(QMainWindow):
         try:
             completed = commands.run_command(command)
         except (OSError, TimeoutError) as exc:
-            self.log_viewer.append_log(f"Helper failed: {exc}")
+            self.last_helper_output = f"Helper failed: {exc}"
+            self.log_viewer.append_log(self.last_helper_output)
             return 1
         output = "\n".join(part for part in (completed.stdout, completed.stderr) if part)
+        self.last_helper_output = output
         if output:
             self.log_viewer.append_log(output)
         return completed.returncode

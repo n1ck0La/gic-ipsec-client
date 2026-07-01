@@ -7,6 +7,7 @@ from gic_ipsec_client.backend.diagnostics import (
     PSK_IDENTITY_MISMATCH_HINT,
     SPLIT_TUNNEL_REMOTE_TS_MISMATCH_HINT,
     STRONGSWAN_DNS_HOOK_NONFATAL_HINT,
+    VPN_DNS_ROLLBACK_FAILED_HINT,
     diagnostic_hints,
     dns_query_used_unexpected_link,
     dummy_dns_link_ignored,
@@ -14,6 +15,7 @@ from gic_ipsec_client.backend.diagnostics import (
     redact_mapping,
     redact_text,
     route_only_domains_configured_on_lo,
+    vpn_dns_rollback_failed,
 )
 from gic_ipsec_client.backend.models import VpnProfile
 
@@ -186,6 +188,35 @@ def test_diagnostics_allows_physical_link_when_dns_apply_verified_it() -> None:
     )
 
     assert DNS_QUERY_WRONG_LINK_HINT not in hints
+
+
+def test_diagnostics_warns_when_disconnected_vpn_dns_remains() -> None:
+    profile = VpnProfile(
+        id="00000000-0000-4000-8000-000000000001",
+        profile_name="Split VPN",
+        gateway_fqdn_or_ip="vpn.example.com",
+        username="alice",
+        eap_identity="alice",
+        psk="psk",
+        password="password",
+        remote_routes=["192.168.88.0/24"],
+        dns_servers=["192.168.88.203"],
+        dns_search_domains=["see-radars.com"],
+    )
+    status = "Link 2 (ens18)\nDNS Servers: 192.168.88.203\n"
+
+    assert vpn_dns_rollback_failed(
+        profile=profile,
+        list_sas_output="",
+        resolved_status=status,
+    )
+    hints = diagnostic_hints(
+        profile=profile,
+        dns_apply_report={"dns_apply_ran": True},
+        default_interface_status=status,
+    )
+
+    assert VPN_DNS_ROLLBACK_FAILED_HINT in hints
 
 
 def test_strongswan_dns_hook_failure_is_nonfatal_when_app_dns_succeeds() -> None:
