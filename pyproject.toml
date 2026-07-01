@@ -1,0 +1,48 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gic-ipsec-client"
+version = "0.1.0"
+description = "GIC, a simple strongSwan-backed Linux desktop IPsec/IKEv2 client"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "GIC contributors" }]
+dependencies = [
+  "PySide6>=6.6",
+  "keyring>=25.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy>=1.10",
+  "pytest>=8.0",
+  "ruff>=0.5",
+]
+
+[project.scripts]
+gic-ipsec-client = "gic_ipsec_client.main:main"
+gic-ipsec-helper = "gic_ipsec_client.helper.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gic_ipsec_client"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_ignores = true
+warn_redundant_casts = true
+disallow_untyped_defs = true
+ignore_missing_imports = true

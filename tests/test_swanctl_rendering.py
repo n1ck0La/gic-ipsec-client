@@ -1,0 +1,64 @@
+from __future__ import annotations
+
+from gic_ipsec_client.backend.models import VpnProfile
+from gic_ipsec_client.backend.renderer import (
+    render_profile_config,
+    render_profile_files,
+    render_sanitized_bundle_config,
+    render_secret_config,
+)
+
+
+def valid_profile() -> VpnProfile:
+    return VpnProfile(
+        id="00000000-0000-4000-8000-000000000001",
+        profile_name="Render VPN",
+        gateway_fqdn_or_ip="vpn.example.com",
+        remote_id="vpn.example.com",
+        local_id="alice@example.com",
+        username="alice",
+        eap_identity="alice@example.com",
+        psk="do-not-leak-psk",
+        password="do-not-leak-password",
+        remote_routes=["10.20.0.0/16", "10.30.0.0/16"],
+    )
+
+
+def test_swanctl_renderer_creates_expected_sections() -> None:
+    profile = valid_profile()
+    rendered = render_profile_config(profile)
+
+    assert "connections {" in rendered
+    assert f"{profile.connection_name} {{" in rendered
+    assert "auth = eap-mschapv2" in rendered
+    assert 'remote_addrs = "vpn.example.com"' in rendered
+    assert "remote_ts = 10.20.0.0/16, 10.30.0.0/16" in rendered
+    assert f"{profile.child_name} {{" in rendered
+
+
+def test_swanctl_secret_renderer_creates_psk_and_eap_sections() -> None:
+    rendered = render_secret_config(valid_profile())
+
+    assert "secrets {" in rendered
+    assert "ike-gic-00000000-0000-4000-8000-000000000001" in rendered
+    assert "eap-gic-00000000-0000-4000-8000-000000000001" in rendered
+    assert 'id-2 = "vpn.example.com"' in rendered
+    assert 'secret = "do-not-leak-psk"' in rendered
+    assert 'secret = "do-not-leak-password"' in rendered
+
+
+def test_renderer_redacts_secrets_in_debug_mode() -> None:
+    profile = valid_profile()
+    rendered = render_sanitized_bundle_config(profile)
+
+    assert "do-not-leak-psk" not in rendered
+    assert "do-not-leak-password" not in rendered
+    assert "<redacted>" in rendered
+
+
+def test_render_profile_files_uses_uuid_paths() -> None:
+    profile = valid_profile()
+    rendered = render_profile_files(profile)
+
+    assert rendered.config_path.name == f"{profile.id}.conf"
+    assert rendered.secrets_path.name == f"{profile.id}.secrets"
