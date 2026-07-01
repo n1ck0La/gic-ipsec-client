@@ -14,23 +14,39 @@ def build_parser() -> argparse.ArgumentParser:
 
     render = subcommands.add_parser(
         "render-profile",
-        help="Render validated profile into /etc/swanctl.",
+        help="Render validated profile into the active swanctl config root.",
     )
     render.add_argument("--request", required=True, type=Path)
+    render.add_argument("--config-root", default="")
 
     delete = subcommands.add_parser("delete-profile", help="Delete GIC swanctl files for a UUID.")
     delete.add_argument("--profile-uuid", required=True)
+    delete.add_argument("--config-root", default="")
 
-    subcommands.add_parser("load-profile", help="Run swanctl --load-all.")
+    load = subcommands.add_parser("load-profile", help="Run swanctl --load-all.")
+    load.add_argument("--config-root", default="")
 
     connect = subcommands.add_parser("connect-profile", help="Initiate a rendered profile.")
     connect.add_argument("--profile-uuid", required=True)
+    connect.add_argument("--config-root", default="")
 
     disconnect = subcommands.add_parser("disconnect-profile", help="Terminate a profile.")
     disconnect.add_argument("--profile-uuid", required=True)
+    disconnect.add_argument("--config-root", default="")
 
     status = subcommands.add_parser("status-profile", help="Print profile status.")
     status.add_argument("--profile-uuid", required=True)
+    status.add_argument("--config-root", default="")
+
+    list_sas = subcommands.add_parser("list-sas", help="Run swanctl --list-sas.")
+    list_sas.add_argument("--config-root", default="")
+
+    list_conns = subcommands.add_parser("list-conns", help="Run swanctl --list-conns.")
+    list_conns.add_argument("--config-root", default="")
+
+    diagnostics = subcommands.add_parser("diagnostics", help="Print swanctl diagnostics as JSON.")
+    diagnostics.add_argument("--profile-uuid", default="")
+    diagnostics.add_argument("--config-root", default="")
     return parser
 
 
@@ -41,11 +57,18 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.command == "render-profile":
-            result = privileged.render_profile_from_request(args.request, uid=uid)
+            result = privileged.render_profile_from_request(
+                args.request,
+                uid=uid,
+                config_root_override=args.config_root,
+            )
             print(json.dumps(result, sort_keys=True))
             return 0
         if args.command == "delete-profile":
-            deleted = privileged.delete_profile(args.profile_uuid)
+            deleted = privileged.delete_profile(
+                args.profile_uuid,
+                config_root_override=args.config_root,
+            )
             print(json.dumps({"deleted": deleted}, sort_keys=True))
             return 0
         if args.command == "load-profile":
@@ -53,13 +76,32 @@ def main(argv: list[str] | None = None) -> int:
             return privileged.load_profile()
         if args.command == "connect-profile":
             privileged.ensure_runtime_tools()
-            return privileged.connect_profile(args.profile_uuid)
+            return privileged.connect_profile(
+                args.profile_uuid,
+                config_root_override=args.config_root,
+            )
         if args.command == "disconnect-profile":
             privileged.ensure_runtime_tools()
             return privileged.disconnect_profile(args.profile_uuid)
         if args.command == "status-profile":
             privileged.ensure_runtime_tools()
             print(privileged.status_profile(args.profile_uuid))
+            return 0
+        if args.command == "list-sas":
+            privileged.ensure_runtime_tools()
+            print(privileged.list_sas())
+            return 0
+        if args.command == "list-conns":
+            privileged.ensure_runtime_tools()
+            print(privileged.list_conns())
+            return 0
+        if args.command == "diagnostics":
+            privileged.ensure_runtime_tools()
+            result = privileged.swanctl_diagnostics(
+                profile_id=args.profile_uuid or None,
+                config_root_override=args.config_root,
+            )
+            print(json.dumps(result, indent=2, sort_keys=True))
             return 0
     except Exception as exc:
         print(privileged.error_to_message(exc), file=sys.stderr)

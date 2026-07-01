@@ -120,6 +120,38 @@ def _run_optional(args: tuple[str, ...], *, timeout_seconds: int = 15) -> str:
     return output.strip() or f"{args[0]} exited with {completed.returncode}"
 
 
+def _run_helper_diagnostics(
+    *,
+    profile: VpnProfile | None,
+    config_root_override: str,
+) -> dict[str, Any]:
+    from gic_ipsec_client.backend.commands import build_pkexec_helper_command, run_command
+
+    args: list[str] = []
+    if profile is not None:
+        args.extend(["--profile-uuid", profile.id])
+    if config_root_override:
+        args.extend(["--config-root", config_root_override])
+    try:
+        completed = run_command(build_pkexec_helper_command("diagnostics", *args))
+    except (OSError, TimeoutError) as exc:
+        return {"error": f"helper diagnostics failed: {exc}"}
+    output = (completed.stdout or "") + (completed.stderr or "")
+    if completed.returncode != 0:
+        return {"error": output.strip() or f"helper diagnostics exited with {completed.returncode}"}
+    try:
+        payload = json.loads(completed.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        return {"error": f"helper diagnostics returned invalid JSON: {exc}", "raw": output}
+    if not isinstance(payload, dict):
+        return {"error": "helper diagnostics returned a non-object JSON payload"}
+    return payload
+
+
+def _format_swanctl_diagnostics(payload: dict[str, Any]) -> str:
+    return json.dumps(payload, indent=2, sort_keys=True)
+
+
 def _service_summary() -> dict[str, str]:
     services = ("charon-systemd", "strongswan", "strongswan-starter")
     return {
@@ -149,9 +181,16 @@ def collect_diagnostics(
     *,
     profile: VpnProfile | None = None,
     privacy_mode: bool = False,
+    config_root_override: str = "",
 ) -> DiagnosticReport:
+    swanctl_diagnostics = _run_helper_diagnostics(
+        profile=profile,
+        config_root_override=config_root_override,
+    )
     sections = {
-        "current_sas": _run_optional(("swanctl", "--list-sas"), timeout_seconds=20),
+        "swanctl_config_and_vici": _format_swanctl_diagnostics(swanctl_diagnostics),
+        "current_sas": str(swanctl_diagnostics.get("list_sas_output", "")),
+        "loaded_conns": str(swanctl_diagnostics.get("list_conns_output", "")),
         "route_table": _run_optional(("ip", "route"), timeout_seconds=10),
         "dns": _run_optional(("resolvectl", "status"), timeout_seconds=10)
         if shutil.which("resolvectl")
@@ -176,6 +215,29 @@ def collect_diagnostics(
         name: redact_text(content, privacy_mode=privacy_mode) for name, content in sections.items()
     }
     summary = check_dependencies()
+    summary["swanctl"] = {
+        "selected_config_root": swanctl_diagnostics.get("selected_swanctl_config_root", ""),
+        "selection_source": swanctl_diagnostics.get("selection_source", ""),
+        "/etc/swanctl exists": swanctl_diagnostics.get("root_exists", {}).get(
+            "/etc/swanctl",
+            False,
+        )
+        if isinstance(swanctl_diagnostics.get("root_exists", {}), dict)
+        else False,
+        "/etc/strongswan/swanctl exists": swanctl_diagnostics.get("root_exists", {}).get(
+            "/etc/strongswan/swanctl",
+            False,
+        )
+        if isinstance(swanctl_diagnostics.get("root_exists", {}), dict)
+        else False,
+        "generated_profile_file": swanctl_diagnostics.get("generated_profile_file", ""),
+        "generated_profile_file_exists": swanctl_diagnostics.get(
+            "generated_profile_file_exists",
+            False,
+        ),
+        "generated_connection_loaded": swanctl_diagnostics.get("generated_connection_loaded"),
+        "helper_error": swanctl_diagnostics.get("error", ""),
+    }
     if profile is not None:
         summary["profile"] = profile.sanitized_dict(privacy_mode=privacy_mode)
     return DiagnosticReport(
@@ -189,6 +251,7 @@ def export_debug_bundle(
     *,
     profile: VpnProfile | None = None,
     privacy_mode: bool = False,
+    config_root_override: str = "",
 ) -> Path:
     from gic_ipsec_client.backend.renderer import render_sanitized_bundle_config
 
@@ -201,7 +264,11 @@ def export_debug_bundle(
     os.close(fd)
     archive_path = Path(archive_name)
 
-    report = collect_diagnostics(profile=profile, privacy_mode=privacy_mode)
+    report = collect_diagnostics(
+        profile=profile,
+        privacy_mode=privacy_mode,
+        config_root_override=config_root_override,
+    )
     os_release = read_os_release()
     profile_json = (
         json.dumps(profile.sanitized_dict(privacy_mode=privacy_mode), indent=2, sort_keys=True)
@@ -219,6 +286,12 @@ def export_debug_bundle(
             "swanctl.sanitized.conf": rendered,
             "diagnostics.txt": report.as_text(),
             "swanctl-list-sas.txt": report.sections.get("current_sas", "") + "\n",
+            "swanctl-list-conns.txt": report.sections.get("loaded_conns", "") + "\n",
+            "swanctl-config-diagnostics.txt": report.sections.get(
+                "swanctl_config_and_vici",
+                "",
+            )
+            + "\n",
             "ip-route.txt": report.sections.get("route_table", "") + "\n",
             "dns.txt": report.sections.get("dns", "") + "\n",
             "strongswan-logs.txt": report.sections.get("strongswan_logs", "") + "\n",

@@ -7,6 +7,11 @@ from gic_ipsec_client.backend.renderer import (
     render_sanitized_bundle_config,
     render_secret_config,
 )
+from gic_ipsec_client.backend.swanctl_paths import (
+    FEDORA_SWANCTL_ROOT,
+    SwanctlLayout,
+    detect_swanctl_config_root,
+)
 
 
 def valid_profile() -> VpnProfile:
@@ -58,7 +63,39 @@ def test_renderer_redacts_secrets_in_debug_mode() -> None:
 
 def test_render_profile_files_uses_uuid_paths() -> None:
     profile = valid_profile()
-    rendered = render_profile_files(profile)
+    layout = SwanctlLayout(root=FEDORA_SWANCTL_ROOT, source="test")
+    rendered = render_profile_files(profile, layout=layout)
 
-    assert rendered.config_path.name == f"{profile.id}.conf"
-    assert rendered.secrets_path.name == f"{profile.id}.secrets"
+    assert rendered.config_path.name == f"gic-{profile.id}.conf"
+    assert rendered.secrets_path is None
+
+
+def test_fedora_root_detection_prefers_strongswan_swanctl() -> None:
+    root, source = detect_swanctl_config_root(
+        os_release={"ID": "fedora"},
+        command_runner=lambda _args, _timeout: "",
+    )
+
+    assert root == FEDORA_SWANCTL_ROOT
+    assert source == "Fedora distro default"
+
+
+def test_fedora_renderer_creates_one_flat_config_with_secrets() -> None:
+    profile = valid_profile()
+    layout = SwanctlLayout(root=FEDORA_SWANCTL_ROOT, source="test", use_secrets_dir=False)
+    rendered = render_profile_files(profile, layout=layout)
+
+    assert rendered.config_path == FEDORA_SWANCTL_ROOT / "conf.d" / f"gic-{profile.id}.conf"
+    assert rendered.secrets_path is None
+    assert "connections {" in rendered.config_text
+    assert "secrets {" in rendered.config_text
+    assert rendered.secrets_text == ""
+    assert rendered.config_mode == 0o600
+
+
+def test_fedora_renderer_does_not_use_nested_gic_ipsec_path() -> None:
+    profile = valid_profile()
+    layout = SwanctlLayout(root=FEDORA_SWANCTL_ROOT, source="test")
+    rendered = render_profile_files(profile, layout=layout)
+
+    assert "conf.d/gic-ipsec" not in rendered.config_path.as_posix()

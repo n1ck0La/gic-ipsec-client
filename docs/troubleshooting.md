@@ -3,8 +3,9 @@
 ## Client-Side Commands
 
 ```bash
-swanctl --list-sas
-swanctl --list-conns
+pkexec gic-ipsec-helper list-sas
+pkexec gic-ipsec-helper list-conns
+pkexec gic-ipsec-helper diagnostics --profile-uuid <uuid>
 journalctl -u strongswan* -u charon-systemd --since "10 minutes ago"
 ip route
 resolvectl status
@@ -24,8 +25,9 @@ nmcli device show
 - Confirm the `vici`, `eap-identity`, `eap-mschapv2`, `kernel-netlink`, and DNS
   integration plugins are installed.
 - Run GIC diagnostics and export a sanitized bundle when asking for help.
-- Verify `/etc/swanctl/secrets.d/gic-ipsec/<uuid>.secrets` is owned by root and
-  mode `0600`.
+- Verify the generated `conf.d/gic-<uuid>.conf` exists under the selected
+  `swanctl` config root. On Fedora this is normally
+  `/etc/strongswan/swanctl`; on Ubuntu/Debian it is normally `/etc/swanctl`.
 
 ## FortiGate-Side Hints
 

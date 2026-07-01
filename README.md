@@ -90,9 +90,10 @@ ruff check .
 4. Put split routes in Advanced when the FortiGate does not push the intended
    route set.
 5. Use Test profile render before connecting.
-6. Connect. GIC writes `/etc/swanctl/conf.d/gic-ipsec/<uuid>.conf` and
-   `/etc/swanctl/secrets.d/gic-ipsec/<uuid>.secrets` through the helper, then
-   calls `swanctl --load-all` and `swanctl --initiate --child <child-name>`.
+6. Connect. GIC detects the active `swanctl` config root, writes
+   `conf.d/gic-<uuid>.conf` through the helper, runs `swanctl --load-all`,
+   verifies the generated connection appears in `swanctl --list-conns`, and
+   only then initiates the child SA.
 
 ## Known Limitations
 

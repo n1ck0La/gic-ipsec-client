@@ -7,8 +7,13 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
+    QFormLayout,
     QHBoxLayout,
+    QLabel,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
@@ -23,7 +28,9 @@ from PySide6.QtWidgets import (
 from gic_ipsec_client.backend import commands, secrets
 from gic_ipsec_client.backend.diagnostics import redact_text
 from gic_ipsec_client.backend.models import ConnectionStatus, VpnProfile
+from gic_ipsec_client.backend.settings import AppSettings, load_app_settings, save_app_settings
 from gic_ipsec_client.backend.strongswan import StrongSwanBackend
+from gic_ipsec_client.backend.swanctl_paths import DEBIAN_SWANCTL_ROOT, FEDORA_SWANCTL_ROOT
 from gic_ipsec_client.backend.validators import ProfileValidationError, validate_profile
 from gic_ipsec_client.gui.log_viewer import LogViewer
 from gic_ipsec_client.gui.profile_editor import ProfileEditor
@@ -46,6 +53,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("GIC IPsec Client")
         self.resize(980, 620)
         self.backend = StrongSwanBackend()
+        self.settings = load_app_settings()
         self.profiles: dict[str, VpnProfile] = {}
         self.profile_list = QListWidget()
         self.status_panel = StatusPanel()
@@ -68,9 +76,12 @@ class MainWindow(QMainWindow):
         edit_button.clicked.connect(self.edit_profile)
         delete_button = QPushButton("Delete")
         delete_button.clicked.connect(self.delete_profile)
+        settings_button = QPushButton("Settings")
+        settings_button.clicked.connect(self.edit_settings)
         toolbar.addWidget(add_button)
         toolbar.addWidget(edit_button)
         toolbar.addWidget(delete_button)
+        toolbar.addWidget(settings_button)
 
         connect_button = QPushButton("Connect")
         connect_button.clicked.connect(self.connect_profile)
@@ -184,7 +195,12 @@ class MainWindow(QMainWindow):
         if not profile:
             QMessageBox.information(self, "No profile selected", "Select a profile first.")
             return
-        self._run_helper("delete-profile", "--profile-uuid", profile.id)
+        self._run_helper(
+            "delete-profile",
+            "--profile-uuid",
+            profile.id,
+            *self._config_root_args(),
+        )
         secrets.delete_profile_secrets(profile.id)
         self.profiles.pop(profile.id, None)
         self._save_profiles()
@@ -213,12 +229,21 @@ class MainWindow(QMainWindow):
             return
         self.status_panel.set_status(ConnectionStatus.CONNECTING)
         request_path = self._write_helper_request(profile)
-        render_result = self._run_helper("render-profile", "--request", str(request_path))
+        render_result = self._run_helper(
+            "render-profile",
+            "--request",
+            str(request_path),
+            *self._config_root_args(),
+        )
         if render_result != 0:
             self.status_panel.set_status(ConnectionStatus.FAILED)
             return
-        self._run_helper("load-profile")
-        connect_result = self._run_helper("connect-profile", "--profile-uuid", profile.id)
+        connect_result = self._run_helper(
+            "connect-profile",
+            "--profile-uuid",
+            profile.id,
+            *self._config_root_args(),
+        )
         self.status_panel.set_status(
             ConnectionStatus.CONNECTED if connect_result == 0 else ConnectionStatus.FAILED
         )
@@ -228,13 +253,21 @@ class MainWindow(QMainWindow):
         if not profile:
             QMessageBox.information(self, "No profile selected", "Select a profile first.")
             return
-        result = self._run_helper("disconnect-profile", "--profile-uuid", profile.id)
+        result = self._run_helper(
+            "disconnect-profile",
+            "--profile-uuid",
+            profile.id,
+            *self._config_root_args(),
+        )
         self.status_panel.set_status(
             ConnectionStatus.DISCONNECTED if result == 0 else ConnectionStatus.FAILED
         )
 
     def run_diagnostics(self) -> None:
-        report = self.backend.collect_diagnostics(profile=self._selected_profile())
+        report = self.backend.collect_diagnostics(
+            profile=self._selected_profile(),
+            config_root_override=self._config_root_override(),
+        )
         self.last_diagnostics = report.as_text()
         self.log_viewer.set_log_text(self.last_diagnostics)
 
@@ -245,6 +278,7 @@ class MainWindow(QMainWindow):
         archive = self.backend.export_debug_bundle(
             Path(directory),
             profile=self._selected_profile(),
+            config_root_override=self._config_root_override(),
         )
         self.log_viewer.append_log(f"Exported sanitized debug bundle: {archive}")
 
@@ -254,12 +288,25 @@ class MainWindow(QMainWindow):
         QApplication.clipboard().setText(redact_text(self.last_diagnostics))
         self.log_viewer.append_log("Diagnostics summary copied.")
 
+    def edit_settings(self) -> None:
+        dialog = SettingsDialog(self.settings, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self.settings = dialog.settings()
+        save_app_settings(self.settings)
+        selected = self._config_root_override() or "Automatic"
+        self.log_viewer.append_log(f"Settings saved. swanctl config root: {selected}")
+
     def _write_helper_request(self, profile: VpnProfile) -> Path:
         request_dir = _request_dir()
         request_dir.mkdir(parents=True, exist_ok=True)
         os.chmod(request_dir, 0o700)
         request_path = request_dir / f"{profile.id}.json"
-        payload = {"action": "render_profile", "profile": profile.to_dict(include_secrets=True)}
+        payload = {
+            "action": "render_profile",
+            "profile": profile.to_dict(include_secrets=True),
+            "swanctl_config_root": self._config_root_override(),
+        }
         request_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
         os.chmod(request_path, 0o600)
         return request_path
@@ -275,3 +322,39 @@ class MainWindow(QMainWindow):
         if output:
             self.log_viewer.append_log(output)
         return completed.returncode
+
+    def _config_root_override(self) -> str:
+        return self.settings.normalized_swanctl_config_root()
+
+    def _config_root_args(self) -> tuple[str, ...]:
+        override = self._config_root_override()
+        return ("--config-root", override) if override else ()
+
+
+class SettingsDialog(QDialog):
+    def __init__(self, settings: AppSettings, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Settings")
+        self.root_combo = QComboBox()
+        self.root_combo.addItem("Automatic", "")
+        self.root_combo.addItem(str(DEBIAN_SWANCTL_ROOT), str(DEBIAN_SWANCTL_ROOT))
+        self.root_combo.addItem(str(FEDORA_SWANCTL_ROOT), str(FEDORA_SWANCTL_ROOT))
+        current = settings.normalized_swanctl_config_root()
+        index = self.root_combo.findData(current)
+        self.root_combo.setCurrentIndex(index if index >= 0 else 0)
+
+        form = QFormLayout()
+        form.addRow(QLabel("swanctl config root"), self.root_combo)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(buttons)
+
+    def settings(self) -> AppSettings:
+        return AppSettings(swanctl_config_root=str(self.root_combo.currentData() or ""))

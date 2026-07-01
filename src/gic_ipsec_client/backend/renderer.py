@@ -5,19 +5,26 @@ from pathlib import Path
 
 from gic_ipsec_client.backend.diagnostics import redact_text
 from gic_ipsec_client.backend.models import VpnProfile
+from gic_ipsec_client.backend.swanctl_paths import (
+    DEBIAN_SWANCTL_ROOT,
+    SwanctlLayout,
+    detect_swanctl_layout,
+)
 from gic_ipsec_client.backend.validators import validate_profile
 
-CONF_ROOT = Path("/etc/swanctl/conf.d/gic-ipsec")
-SECRETS_ROOT = Path("/etc/swanctl/secrets.d/gic-ipsec")
+CONF_ROOT = DEBIAN_SWANCTL_ROOT / "conf.d"
+SECRETS_ROOT = DEBIAN_SWANCTL_ROOT / "secrets.d"
 
 
 @dataclass(frozen=True, slots=True)
 class RenderedProfile:
     profile_id: str
     config_path: Path
-    secrets_path: Path
+    secrets_path: Path | None
     config_text: str
     secrets_text: str
+    config_mode: int = 0o600
+    secrets_mode: int = 0o600
 
 
 def _quote(value: str) -> str:
@@ -123,16 +130,31 @@ def render_secret_config(profile: VpnProfile, *, debug: bool = False) -> str:
 def render_profile_files(
     profile: VpnProfile,
     *,
-    conf_root: Path = CONF_ROOT,
-    secrets_root: Path = SECRETS_ROOT,
+    layout: SwanctlLayout | None = None,
+    config_root_override: str | Path | None = None,
 ) -> RenderedProfile:
     validate_profile(profile)
+    selected_layout = layout or detect_swanctl_layout(override=config_root_override)
+    config_text = render_profile_config(profile)
+    secrets_text = render_secret_config(profile)
+    if selected_layout.use_secrets_dir:
+        return RenderedProfile(
+            profile_id=profile.id,
+            config_path=selected_layout.profile_config_path(profile.id),
+            secrets_path=selected_layout.profile_secrets_path(profile.id),
+            config_text=config_text,
+            secrets_text=secrets_text,
+            config_mode=0o644,
+            secrets_mode=0o600,
+        )
     return RenderedProfile(
         profile_id=profile.id,
-        config_path=conf_root / f"{profile.id}.conf",
-        secrets_path=secrets_root / f"{profile.id}.secrets",
-        config_text=render_profile_config(profile),
-        secrets_text=render_secret_config(profile),
+        config_path=selected_layout.profile_config_path(profile.id),
+        secrets_path=None,
+        config_text=config_text + "\n" + secrets_text,
+        secrets_text="",
+        config_mode=0o600,
+        secrets_mode=0o600,
     )
 
 

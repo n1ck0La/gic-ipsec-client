@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -37,30 +38,82 @@ class StrongSwanBackend:
         validate_profile(profile)
         return render_profile_files(profile)
 
-    def load_profile(self) -> BackendResult:
-        return self._run(commands.swanctl_load_all(), "Loaded strongSwan configuration.")
-
-    def connect_profile(self, profile: VpnProfile) -> BackendResult:
-        validate_profile(profile)
-        return self._run(commands.swanctl_initiate(profile.child_name), "Connection initiated.")
-
-    def disconnect_profile(self, profile: VpnProfile) -> BackendResult:
-        return self._run(
-            commands.swanctl_terminate(profile.connection_name),
-            "Connection terminated.",
+    def load_profile(self, *, config_root_override: str = "") -> BackendResult:
+        return self._run_helper(
+            "load-profile",
+            "Loaded strongSwan configuration.",
+            *self._config_root_args(config_root_override),
         )
 
-    def status_profile(self, profile: VpnProfile) -> ConnectionStatus:
-        completed = commands.run_command(commands.swanctl_list_sas())
-        output = (completed.stdout or "") + (completed.stderr or "")
+    def connect_profile(
+        self,
+        profile: VpnProfile,
+        *,
+        config_root_override: str = "",
+    ) -> BackendResult:
+        validate_profile(profile)
+        return self._run_helper(
+            "connect-profile",
+            "Connection initiated.",
+            "--profile-uuid",
+            profile.id,
+            *self._config_root_args(config_root_override),
+        )
+
+    def disconnect_profile(
+        self,
+        profile: VpnProfile,
+        *,
+        config_root_override: str = "",
+    ) -> BackendResult:
+        return self._run_helper(
+            "disconnect-profile",
+            "Connection terminated.",
+            "--profile-uuid",
+            profile.id,
+            *self._config_root_args(config_root_override),
+        )
+
+    def status_profile(
+        self,
+        profile: VpnProfile,
+        *,
+        config_root_override: str = "",
+    ) -> ConnectionStatus:
+        completed = commands.run_command(
+            commands.build_pkexec_helper_command(
+                "status-profile",
+                "--profile-uuid",
+                profile.id,
+                *self._config_root_args(config_root_override),
+            )
+        )
+        output = ((completed.stdout or "") + (completed.stderr or "")).strip()
         if completed.returncode != 0:
             return ConnectionStatus.FAILED
-        if profile.connection_name in output:
+        if output == ConnectionStatus.CONNECTED:
             return ConnectionStatus.CONNECTED
         return ConnectionStatus.DISCONNECTED
 
-    def delete_profile(self, profile_id: str) -> list[Path]:
-        return commands.delete_profile_files(profile_id)
+    def delete_profile(self, profile_id: str, *, config_root_override: str = "") -> list[Path]:
+        completed = commands.run_command(
+            commands.build_pkexec_helper_command(
+                "delete-profile",
+                "--profile-uuid",
+                profile_id,
+                *self._config_root_args(config_root_override),
+            )
+        )
+        if completed.returncode != 0:
+            return []
+        try:
+            payload = json.loads(completed.stdout or "{}")
+        except json.JSONDecodeError:
+            return []
+        deleted = payload.get("deleted", [])
+        if not isinstance(deleted, list):
+            return []
+        return [Path(str(path)) for path in deleted]
 
     def collect_logs(self) -> BackendResult:
         return self._run(commands.journalctl_logs(), "Collected strongSwan logs.")
@@ -70,8 +123,13 @@ class StrongSwanBackend:
         *,
         profile: VpnProfile | None = None,
         privacy_mode: bool = False,
+        config_root_override: str = "",
     ) -> DiagnosticReport:
-        return collect_diagnostics(profile=profile, privacy_mode=privacy_mode)
+        return collect_diagnostics(
+            profile=profile,
+            privacy_mode=privacy_mode,
+            config_root_override=config_root_override,
+        )
 
     def export_debug_bundle(
         self,
@@ -79,8 +137,14 @@ class StrongSwanBackend:
         *,
         profile: VpnProfile | None = None,
         privacy_mode: bool = False,
+        config_root_override: str = "",
     ) -> Path:
-        return export_debug_bundle(output_dir, profile=profile, privacy_mode=privacy_mode)
+        return export_debug_bundle(
+            output_dir,
+            profile=profile,
+            privacy_mode=privacy_mode,
+            config_root_override=config_root_override,
+        )
 
     @staticmethod
     def _run(command: commands.CommandSpec, success_message: str) -> BackendResult:
@@ -93,3 +157,14 @@ class StrongSwanBackend:
             stdout=output,
             stderr=error,
         )
+
+    @staticmethod
+    def _run_helper(subcommand: str, success_message: str, *args: str) -> BackendResult:
+        return StrongSwanBackend._run(
+            commands.build_pkexec_helper_command(subcommand, *args),
+            success_message,
+        )
+
+    @staticmethod
+    def _config_root_args(config_root_override: str) -> tuple[str, ...]:
+        return ("--config-root", config_root_override) if config_root_override else ()

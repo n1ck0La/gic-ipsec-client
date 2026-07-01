@@ -5,11 +5,18 @@ import os
 import shutil
 import stat
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 
 from gic_ipsec_client.backend import commands
 from gic_ipsec_client.backend.models import VpnProfile
-from gic_ipsec_client.backend.renderer import CONF_ROOT, SECRETS_ROOT, render_profile_files
+from gic_ipsec_client.backend.renderer import render_profile_files
+from gic_ipsec_client.backend.swanctl_paths import (
+    KNOWN_SWANCTL_ROOTS,
+    detect_swanctl_layout,
+    profile_loaded_in_list_conns,
+    swanctl_files_by_root,
+)
 from gic_ipsec_client.backend.validators import (
     ProfileValidationError,
     validate_profile,
@@ -45,13 +52,25 @@ def validate_request_path(path: Path, *, uid: int) -> Path:
 
 
 def read_profile_request(path: Path, *, uid: int, expected_action: str) -> VpnProfile:
-    request_path = validate_request_path(path, uid=uid)
-    payload = json.loads(request_path.read_text(encoding="utf-8"))
-    if payload.get("action") != expected_action:
-        raise HelperError(f"Request action must be {expected_action}.")
+    payload = read_helper_request_payload(path, uid=uid, expected_action=expected_action)
     profile = VpnProfile.from_dict(payload.get("profile", {}))
     validate_profile(profile)
     return profile
+
+
+def read_helper_request_payload(
+    path: Path,
+    *,
+    uid: int,
+    expected_action: str,
+) -> dict[str, object]:
+    request_path = validate_request_path(path, uid=uid)
+    payload = json.loads(request_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise HelperError("Request payload must be a JSON object.")
+    if payload.get("action") != expected_action:
+        raise HelperError(f"Request action must be {expected_action}.")
+    return payload
 
 
 def _atomic_write(path: Path, content: str, *, mode: int) -> None:
@@ -71,32 +90,76 @@ def _atomic_write(path: Path, content: str, *, mode: int) -> None:
             tmp_path.unlink()
 
 
-def render_profile_from_request(request_path: Path, *, uid: int) -> dict[str, str]:
-    profile = read_profile_request(request_path, uid=uid, expected_action="render_profile")
-    rendered = render_profile_files(profile)
-    CONF_ROOT.mkdir(parents=True, exist_ok=True)
-    SECRETS_ROOT.mkdir(parents=True, exist_ok=True)
-    os.chmod(SECRETS_ROOT, 0o700)
-    _atomic_write(rendered.config_path, rendered.config_text, mode=0o644)
-    _atomic_write(rendered.secrets_path, rendered.secrets_text, mode=0o600)
+def _request_config_root_override(payload: Mapping[str, object]) -> str:
+    value = payload.get("swanctl_config_root", "")
+    return str(value or "")
+
+
+def render_profile_from_request(
+    request_path: Path,
+    *,
+    uid: int,
+    config_root_override: str = "",
+) -> dict[str, str]:
+    payload = read_helper_request_payload(request_path, uid=uid, expected_action="render_profile")
+    profile = VpnProfile.from_dict(payload.get("profile", {}))
+    validate_profile(profile)
+    override = config_root_override or _request_config_root_override(payload)
+    layout = detect_swanctl_layout(override=override)
+    rendered = render_profile_files(profile, layout=layout)
+    rendered.config_path.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write(rendered.config_path, rendered.config_text, mode=rendered.config_mode)
+    if rendered.secrets_path is not None:
+        rendered.secrets_path.parent.mkdir(parents=True, exist_ok=True)
+        os.chmod(rendered.secrets_path.parent, 0o700)
+        _atomic_write(rendered.secrets_path, rendered.secrets_text, mode=rendered.secrets_mode)
     return {
+        "swanctl_config_root": str(layout.root),
+        "layout_source": layout.source,
         "config_path": str(rendered.config_path),
-        "secrets_path": str(rendered.secrets_path),
+        "secrets_path": str(rendered.secrets_path) if rendered.secrets_path else "",
     }
 
 
-def delete_profile(profile_id: str) -> list[str]:
+def delete_profile(profile_id: str, *, config_root_override: str = "") -> list[str]:
     validate_uuid(profile_id)
-    return [str(path) for path in commands.delete_profile_files(profile_id)]
+    return [
+        str(path)
+        for path in commands.delete_profile_files(
+            profile_id,
+            config_root_override=config_root_override,
+            all_known_roots=not bool(config_root_override),
+        )
+    ]
 
 
 def load_profile() -> int:
     return commands.run_command(commands.swanctl_load_all()).returncode
 
 
-def connect_profile(profile_id: str) -> int:
+def connect_profile(profile_id: str, *, config_root_override: str = "") -> int:
     validate_uuid(profile_id)
-    return commands.run_command(commands.swanctl_initiate(f"gic-{profile_id}-child")).returncode
+    connection_name = f"gic-{profile_id}"
+    child_name = f"{connection_name}-child"
+    load_completed = commands.run_command(commands.swanctl_load_all())
+    if load_completed.returncode != 0:
+        raise HelperError(_completed_message(load_completed) or "swanctl --load-all failed.")
+
+    list_completed = commands.run_command(commands.swanctl_list_conns())
+    if list_completed.returncode != 0:
+        raise HelperError(_completed_message(list_completed) or "swanctl --list-conns failed.")
+
+    list_output = (list_completed.stdout or "") + (list_completed.stderr or "")
+    if not profile_loaded_in_list_conns(
+        list_output,
+        connection_name=connection_name,
+        child_name=child_name,
+    ):
+        raise HelperError(
+            "Profile was rendered but strongSwan did not load it. "
+            "Check swanctl config root and include paths."
+        )
+    return commands.run_command(commands.swanctl_initiate(child_name)).returncode
 
 
 def disconnect_profile(profile_id: str) -> int:
@@ -111,6 +174,57 @@ def status_profile(profile_id: str) -> str:
     if completed.returncode != 0:
         return "Failed"
     return "Connected" if f"gic-{profile_id}" in output else "Disconnected"
+
+
+def list_sas() -> str:
+    return _run_swanctl_for_output(commands.swanctl_list_sas())
+
+
+def list_conns() -> str:
+    return _run_swanctl_for_output(commands.swanctl_list_conns())
+
+
+def swanctl_diagnostics(
+    *,
+    profile_id: str | None = None,
+    config_root_override: str = "",
+) -> dict[str, object]:
+    if profile_id:
+        validate_uuid(profile_id)
+    layout = detect_swanctl_layout(override=config_root_override)
+    list_conns_completed = commands.run_command(commands.swanctl_list_conns())
+    list_sas_completed = commands.run_command(commands.swanctl_list_sas())
+    list_conns_output = _completed_message(list_conns_completed)
+    profile_config = layout.profile_config_path(profile_id) if profile_id else None
+    connection_name = f"gic-{profile_id}" if profile_id else ""
+    child_name = f"{connection_name}-child" if profile_id else ""
+    loaded = (
+        profile_loaded_in_list_conns(
+            list_conns_output,
+            connection_name=connection_name,
+            child_name=child_name,
+        )
+        if profile_id
+        else None
+    )
+    return {
+        "selected_swanctl_config_root": str(layout.root),
+        "selection_source": layout.source,
+        "uses_secrets_d": layout.use_secrets_dir,
+        "root_exists": layout.root_exists,
+        "swanctl_conf_include_lines": layout.include_lines_by_root,
+        "systemctl_cat_strongswan_include_lines": layout.systemctl_include_lines,
+        "startup_log_include_lines": layout.log_include_lines,
+        "files_under_roots": swanctl_files_by_root(),
+        "generated_profile_file": str(profile_config) if profile_config else "",
+        "generated_profile_file_exists": bool(profile_config and profile_config.exists()),
+        "generated_connection_loaded": loaded,
+        "list_conns_returncode": list_conns_completed.returncode,
+        "list_conns_output": list_conns_output,
+        "list_sas_returncode": list_sas_completed.returncode,
+        "list_sas_output": _completed_message(list_sas_completed),
+        "known_roots": [str(root) for root in KNOWN_SWANCTL_ROOTS],
+    }
 
 
 def helper_uid() -> int:
@@ -132,3 +246,17 @@ def error_to_message(exc: Exception) -> str:
     if isinstance(exc, (HelperError, ProfileValidationError, FileNotFoundError)):
         return str(exc)
     return f"Unexpected helper failure: {exc}"
+
+
+def _run_swanctl_for_output(spec: commands.CommandSpec) -> str:
+    completed = commands.run_command(spec)
+    output = _completed_message(completed)
+    if completed.returncode != 0:
+        raise HelperError(output or f"{' '.join(spec.args)} failed.")
+    return output
+
+
+def _completed_message(completed: object) -> str:
+    stdout = getattr(completed, "stdout", "") or ""
+    stderr = getattr(completed, "stderr", "") or ""
+    return (stdout + stderr).strip()

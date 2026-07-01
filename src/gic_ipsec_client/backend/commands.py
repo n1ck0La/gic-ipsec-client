@@ -7,7 +7,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from gic_ipsec_client.backend.renderer import CONF_ROOT, SECRETS_ROOT
+from gic_ipsec_client.backend.swanctl_paths import (
+    KNOWN_SWANCTL_ROOTS,
+    SwanctlLayout,
+    detect_swanctl_layout,
+)
 from gic_ipsec_client.backend.validators import ProfileValidationError, validate_uuid
 
 
@@ -98,11 +102,17 @@ def build_pkexec_helper_command(subcommand: str, *args: str) -> CommandSpec:
 def profile_paths(
     profile_id: str,
     *,
-    conf_root: Path = CONF_ROOT,
-    secrets_root: Path = SECRETS_ROOT,
-) -> tuple[Path, Path]:
+    layout: SwanctlLayout | None = None,
+    config_root_override: str | Path | None = None,
+) -> tuple[Path, Path | None]:
     validate_uuid(profile_id)
-    return conf_root / f"{profile_id}.conf", secrets_root / f"{profile_id}.secrets"
+    selected_layout = layout or detect_swanctl_layout(override=config_root_override)
+    return (
+        selected_layout.profile_config_path(profile_id),
+        selected_layout.profile_secrets_path(profile_id)
+        if selected_layout.use_secrets_dir
+        else None,
+    )
 
 
 def _is_under(path: Path, root: Path) -> bool:
@@ -116,26 +126,35 @@ def _is_under(path: Path, root: Path) -> bool:
 def delete_profile_files(
     profile_id: str,
     *,
-    conf_root: Path = CONF_ROOT,
-    secrets_root: Path = SECRETS_ROOT,
+    layout: SwanctlLayout | None = None,
+    config_root_override: str | Path | None = None,
+    all_known_roots: bool = False,
 ) -> list[Path]:
     """Delete only the UUID-named files GIC owns below the configured swanctl roots."""
 
-    conf_path, secrets_path = profile_paths(
-        profile_id,
-        conf_root=conf_root,
-        secrets_root=secrets_root,
+    validate_uuid(profile_id)
+    layouts = (
+        [SwanctlLayout(root=root, source="known root cleanup") for root in KNOWN_SWANCTL_ROOTS]
+        if all_known_roots
+        else [layout or detect_swanctl_layout(override=config_root_override)]
     )
-    targets = ((conf_path, conf_root), (secrets_path, secrets_root))
     deleted: list[Path] = []
-    for path, root in targets:
-        if not _is_under(path, root):
-            raise ProfileValidationError(f"Refusing to delete path outside {root}: {path}")
-        if path.name not in {f"{profile_id}.conf", f"{profile_id}.secrets"}:
-            raise ProfileValidationError(f"Refusing to delete unexpected filename: {path.name}")
-        if path.exists():
-            path.unlink()
-            deleted.append(path)
+    expected_names = {f"gic-{profile_id}.conf", f"gic-{profile_id}.secrets"}
+    for selected_layout in layouts:
+        targets = (
+            selected_layout.profile_config_path(profile_id),
+            selected_layout.profile_secrets_path(profile_id),
+        )
+        for path in targets:
+            if not _is_under(path, selected_layout.root):
+                raise ProfileValidationError(
+                    f"Refusing to delete path outside {selected_layout.root}: {path}"
+                )
+            if path.name not in expected_names:
+                raise ProfileValidationError(f"Refusing to delete unexpected filename: {path.name}")
+            if path.exists():
+                path.unlink()
+                deleted.append(path)
     return deleted
 
 
