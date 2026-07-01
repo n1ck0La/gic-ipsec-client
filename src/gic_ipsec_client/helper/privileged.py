@@ -241,16 +241,27 @@ def disconnect_profile(profile_id: str) -> int:
         cleanup_on_success=False,
     )
     completed = commands.run_command(commands.swanctl_terminate(f"gic-{profile_id}"))
-    post_flush_errors = flush_resolved_dns_caches(run_command=commands.run_command)
+    warnings = _dns_warning_lines(profile_id)
+    if completed.returncode != 0:
+        warnings.append(_completed_message(completed) or "swanctl --terminate failed.")
+    post_flush_warnings = flush_resolved_dns_caches(run_command=commands.run_command)
     verify_errors = verify_resolved_dns_after_disconnect(
         profile_id,
         run_command=commands.run_command,
     )
-    if completed.returncode != 0:
-        return completed.returncode
-    errors = [*dns_errors, *post_flush_errors, *verify_errors]
+    warnings.extend(post_flush_warnings)
+    list_sas_completed = commands.run_command(commands.swanctl_list_sas())
+    list_sas_output = _completed_message(list_sas_completed)
+    sa_errors: list[str] = []
+    if list_sas_completed.returncode != 0:
+        sa_errors.append(list_sas_output or "swanctl --list-sas failed.")
+    elif f"gic-{profile_id}" in list_sas_output:
+        sa_errors.append("Selected IKE_SA remains active after disconnect.")
+    errors = [*dns_errors, *verify_errors, *sa_errors]
     if errors:
         raise HelperError("\n".join(errors))
+    if warnings:
+        _print_disconnect_warnings(warnings)
     return 0
 
 
@@ -379,3 +390,17 @@ def _completed_message(completed: object) -> str:
     stdout = getattr(completed, "stdout", "") or ""
     stderr = getattr(completed, "stderr", "") or ""
     return (stdout + stderr).strip()
+
+
+def _dns_warning_lines(profile_id: str) -> list[str]:
+    report = load_dns_apply_report(profile_id)
+    raw_warnings = report.get("warnings", []) if isinstance(report, dict) else []
+    if not isinstance(raw_warnings, list):
+        return []
+    return [str(item) for item in raw_warnings if str(item)]
+
+
+def _print_disconnect_warnings(warnings: list[str]) -> None:
+    print("Disconnect completed with warnings")
+    for warning in dict.fromkeys(warnings):
+        print(f"- {warning}")

@@ -311,6 +311,8 @@ def test_disconnect_reverts_lo_for_split_dns(tmp_path: Path) -> None:
     errors = revert_resolved_dns(profile_id, run_command=fake_run, state_root=tmp_path)
 
     assert errors == []
+    report = load_dns_apply_report(profile_id, state_root=tmp_path)
+    assert "seeipsec0 not present; nothing to clean up." in report["warnings"]
     assert calls == [
         ("resolvectl", "revert", "lo"),
         ("resolvectl", "revert", "seeipsec0"),
@@ -318,6 +320,51 @@ def test_disconnect_reverts_lo_for_split_dns(tmp_path: Path) -> None:
         ("resolvectl", "flush-caches"),
         ("resolvectl", "reset-server-features"),
     ]
+
+
+def test_cleanup_revert_failure_is_warning_when_explicit_restore_succeeds(
+    tmp_path: Path,
+) -> None:
+    profile_id = "00000000-0000-4000-8000-000000000001"
+    save_resolved_plan(
+        ResolvedDnsPlan(
+            profile_id=profile_id,
+            interface="ens18",
+            dns_servers=("9.9.9.9", "8.8.8.8"),
+            search_domains=(),
+            split_tunnel_enabled=True,
+            default_route=True,
+            vpn_dns_servers=("192.168.88.203",),
+        ),
+        state_root=tmp_path,
+    )
+
+    class FailedRevertCompleted(Completed):
+        returncode = 1
+        stderr = (
+            "Failed to revert interface configuration: Could not activate remote peer "
+            "'org.freedesktop.network1': activation request failed: unknown unit"
+        )
+
+    class MissingCompleted(Completed):
+        returncode = 1
+
+    def fake_run(spec: commands.CommandSpec) -> Completed:
+        if spec.args in {
+            ("resolvectl", "revert", "lo"),
+            ("resolvectl", "revert", "seeipsec0"),
+        }:
+            return FailedRevertCompleted()
+        if spec.args == ("ip", "link", "show", "seeipsec0"):
+            return MissingCompleted()
+        return Completed()
+
+    errors = revert_resolved_dns(profile_id, run_command=fake_run, state_root=tmp_path)
+
+    assert errors == []
+    warnings = load_dns_apply_report(profile_id, state_root=tmp_path)["warnings"]
+    assert any("org.freedesktop.network1" in warning for warning in warnings)
+    assert "seeipsec0 not present; nothing to clean up." in warnings
 
 
 def test_disconnect_reverts_saved_physical_dns_interface(tmp_path: Path) -> None:
@@ -484,3 +531,24 @@ def test_disconnect_deletes_dummy_interface_when_present(tmp_path: Path) -> None
     assert errors == []
     assert ("ip", "link", "delete", "seeipsec0") in calls
     assert ("resolvectl", "reset-server-features") in calls
+
+
+def test_missing_dummy_interface_is_warning_not_error(tmp_path: Path) -> None:
+    profile_id = "00000000-0000-4000-8000-000000000001"
+
+    class MissingCompleted(Completed):
+        returncode = 1
+        stderr = 'Failed to resolve interface "seeipsec0": No such device'
+
+    def fake_run(spec: commands.CommandSpec) -> Completed:
+        if spec.args == ("ip", "link", "show", "seeipsec0"):
+            return MissingCompleted()
+        return Completed()
+
+    errors = revert_resolved_dns(profile_id, run_command=fake_run, state_root=tmp_path)
+
+    assert errors == []
+    assert "seeipsec0 not present; nothing to clean up." in load_dns_apply_report(
+        profile_id,
+        state_root=tmp_path,
+    )["warnings"]

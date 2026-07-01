@@ -538,7 +538,10 @@ def revert_resolved_dns(
             completed = run_command(spec)
             _record_completed(report, spec, completed, phase="rollback")
             if getattr(completed, "returncode", 1) != 0:
-                messages.append(_completed_message(completed) or f"{' '.join(spec.args)} failed.")
+                _record_warning(
+                    report,
+                    _completed_message(completed) or f"{' '.join(spec.args)} failed.",
+                )
     show_dummy = run_command(ip_link_show(DUMMY_DNS_INTERFACE))
     _record_completed(report, ip_link_show(DUMMY_DNS_INTERFACE), show_dummy, phase="rollback")
     if getattr(show_dummy, "returncode", 1) == 0:
@@ -546,20 +549,27 @@ def revert_resolved_dns(
         delete_dummy = run_command(delete_spec)
         _record_completed(report, delete_spec, delete_dummy, phase="rollback")
         if getattr(delete_dummy, "returncode", 1) != 0:
-            messages.append(
-                _completed_message(delete_dummy) or f"{' '.join(delete_spec.args)} failed."
+            _record_warning(
+                report,
+                _completed_message(delete_dummy) or f"{' '.join(delete_spec.args)} failed.",
             )
+    else:
+        _record_warning(report, "seeipsec0 not present; nothing to clean up.")
     for spec in [commands.CommandSpec(("resolvectl", "flush-caches"), timeout_seconds=15)]:
         completed = run_command(spec)
         _record_completed(report, spec, completed, phase="rollback")
         if getattr(completed, "returncode", 1) != 0:
-            messages.append(_completed_message(completed) or f"{' '.join(spec.args)} failed.")
+            _record_warning(
+                report,
+                _completed_message(completed) or f"{' '.join(spec.args)} failed.",
+            )
     reset_spec = resolvectl_reset_server_features()
     reset_completed = run_command(reset_spec)
     _record_completed(report, reset_spec, reset_completed, phase="rollback")
     if getattr(reset_completed, "returncode", 1) != 0:
-        messages.append(
-            _completed_message(reset_completed) or f"{' '.join(reset_spec.args)} failed."
+        _record_warning(
+            report,
+            _completed_message(reset_completed) or f"{' '.join(reset_spec.args)} failed.",
         )
     if restored_physical_interface:
         notes = report.setdefault("notes", [])
@@ -685,6 +695,7 @@ def _new_dns_apply_report(profile_id: str) -> dict[str, object]:
         "commands": [],
         "verification": [],
         "errors": [],
+        "warnings": [],
         "notes": [],
     }
 
@@ -723,6 +734,12 @@ def _record_failed_execution(
         _SyntheticCompleted(returncode=127, stderr=str(exc)),
         phase=phase,
     )
+
+
+def _record_warning(report: dict[str, object], message: str) -> None:
+    warnings = report.setdefault("warnings", [])
+    if isinstance(warnings, list) and message:
+        warnings.append(message)
 
 
 def _run_and_record(
@@ -766,6 +783,12 @@ def _restore_physical_dns(
             phase="rollback",
         )
         if getattr(completed, "returncode", 1) != 0:
+            if spec.args == resolvectl_reset_server_features().args:
+                _record_warning(
+                    report,
+                    _completed_message(completed) or f"{' '.join(spec.args)} failed.",
+                )
+                continue
             restore_messages.append(
                 _completed_message(completed) or f"{' '.join(spec.args)} failed."
             )

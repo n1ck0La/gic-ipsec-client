@@ -119,6 +119,13 @@ class MainWindow(QMainWindow):
         right = QWidget()
         right_layout = QVBoxLayout(right)
         right_layout.addLayout(action_row)
+        self.disconnect_warning_label = QLabel("Disconnect completed with warnings")
+        self.disconnect_warning_label.setObjectName("disconnectWarning")
+        self.disconnect_warning_label.setVisible(False)
+        self.disconnect_warning_label.setStyleSheet(
+            "font-weight: 700; color: #9a6b00; padding: 6px 0;"
+        )
+        right_layout.addWidget(self.disconnect_warning_label)
         right_layout.addWidget(self.log_viewer)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -252,6 +259,8 @@ class MainWindow(QMainWindow):
         self.status_panel.set_status(
             ConnectionStatus.CONNECTED if connect_result == 0 else ConnectionStatus.FAILED
         )
+        if connect_result == 0:
+            self.disconnect_warning_label.setVisible(False)
 
     def disconnect_profile(self) -> None:
         profile = self._selected_profile()
@@ -266,6 +275,9 @@ class MainWindow(QMainWindow):
         )
         self.status_panel.set_status(
             ConnectionStatus.DISCONNECTED if result == 0 else ConnectionStatus.FAILED
+        )
+        self.disconnect_warning_label.setVisible(
+            result == 0 and "Disconnect completed with warnings" in self.last_helper_output
         )
         self.reconnect_button.setVisible(
             result != 0 and "Reconnect network interface is available" in self.last_helper_output
@@ -283,6 +295,7 @@ class MainWindow(QMainWindow):
         )
         if result == 0:
             self.reconnect_button.setVisible(False)
+            self.disconnect_warning_label.setVisible(False)
 
     def run_diagnostics(self) -> None:
         report = self.backend.collect_diagnostics(
