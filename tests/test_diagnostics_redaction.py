@@ -255,3 +255,8 @@ def test_fedora_install_hint_does_not_use_debian_swanctl_package_name() -> None:
     assert "strongswan-swanctl" not in hint
     assert "strongswan" in hint
     assert "bind-utils" in hint
+
+
+def test_diagnostics_install_hints_do_not_reference_fedora_only_bad_package() -> None:
+    assert "strongswan-swanctl" not in install_hint({"ID": "fedora"})
+    assert "strongswan-swanctl" not in install_hint({"ID": "ubuntu"})

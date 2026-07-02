@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from gic_ipsec_client.backend import commands
+from gic_ipsec_client.backend.swanctl_paths import SwanctlLayout
 from gic_ipsec_client.helper import privileged
 
 
@@ -13,15 +16,19 @@ class Completed:
         self.stderr = stderr
 
 
+def _is_swanctl_command(args: tuple[str, ...], *tail: str) -> bool:
+    return Path(args[0]).name == "swanctl" and args[1:] == tail
+
+
 def test_initiate_is_blocked_when_child_is_not_loaded(monkeypatch: pytest.MonkeyPatch) -> None:
     profile_id = "00000000-0000-4000-8000-000000000001"
     calls: list[tuple[str, ...]] = []
 
     def fake_run(spec: commands.CommandSpec) -> Completed:
         calls.append(spec.args)
-        if spec.args == ("swanctl", "--load-all"):
+        if _is_swanctl_command(spec.args, "--load-all"):
             return Completed(0, "loaded")
-        if spec.args == ("swanctl", "--list-conns"):
+        if _is_swanctl_command(spec.args, "--list-conns"):
             return Completed(0, "other-connection:\n  children:\n    other-child:\n")
         raise AssertionError(f"unexpected command: {spec.args}")
 
@@ -33,7 +40,10 @@ def test_initiate_is_blocked_when_child_is_not_loaded(monkeypatch: pytest.Monkey
     ):
         privileged.connect_profile(profile_id)
 
-    assert ("swanctl", "--initiate", "--child", f"gic-{profile_id}-child") not in calls
+    assert not any(
+        _is_swanctl_command(args, "--initiate", "--child", f"gic-{profile_id}-child")
+        for args in calls
+    )
 
 
 def test_disconnect_restores_dns_before_terminating_sa(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -53,10 +63,10 @@ def test_disconnect_restores_dns_before_terminating_sa(monkeypatch: pytest.Monke
         return []
 
     def fake_run(spec: commands.CommandSpec) -> Completed:
-        if spec.args == ("swanctl", "--terminate", "--ike", f"gic-{profile_id}"):
+        if _is_swanctl_command(spec.args, "--terminate", "--ike", f"gic-{profile_id}"):
             calls.append("terminate-sa")
             return Completed(0)
-        if spec.args == ("swanctl", "--list-sas"):
+        if _is_swanctl_command(spec.args, "--list-sas"):
             calls.append("list-sas")
             return Completed(0, "")
         raise AssertionError(f"unexpected command: {spec.args}")
@@ -78,9 +88,9 @@ def test_disconnect_succeeds_with_cleanup_warnings_when_final_state_is_good(
     profile_id = "00000000-0000-4000-8000-000000000001"
 
     def fake_run(spec: commands.CommandSpec) -> Completed:
-        if spec.args == ("swanctl", "--terminate", "--ike", f"gic-{profile_id}"):
+        if _is_swanctl_command(spec.args, "--terminate", "--ike", f"gic-{profile_id}"):
             return Completed(1, stderr="terminate already gone")
-        if spec.args == ("swanctl", "--list-sas"):
+        if _is_swanctl_command(spec.args, "--list-sas"):
             return Completed(0, "")
         raise AssertionError(f"unexpected command: {spec.args}")
 
@@ -110,9 +120,9 @@ def test_disconnect_fails_when_selected_sa_remains_active(
     profile_id = "00000000-0000-4000-8000-000000000001"
 
     def fake_run(spec: commands.CommandSpec) -> Completed:
-        if spec.args == ("swanctl", "--terminate", "--ike", f"gic-{profile_id}"):
+        if _is_swanctl_command(spec.args, "--terminate", "--ike", f"gic-{profile_id}"):
             return Completed(0)
-        if spec.args == ("swanctl", "--list-sas"):
+        if _is_swanctl_command(spec.args, "--list-sas"):
             return Completed(0, f"gic-{profile_id}: ESTABLISHED")
         raise AssertionError(f"unexpected command: {spec.args}")
 
@@ -136,9 +146,9 @@ def test_disconnect_fails_when_final_dns_verification_fails(
     profile_id = "00000000-0000-4000-8000-000000000001"
 
     def fake_run(spec: commands.CommandSpec) -> Completed:
-        if spec.args == ("swanctl", "--terminate", "--ike", f"gic-{profile_id}"):
+        if _is_swanctl_command(spec.args, "--terminate", "--ike", f"gic-{profile_id}"):
             return Completed(0)
-        if spec.args == ("swanctl", "--list-sas"):
+        if _is_swanctl_command(spec.args, "--list-sas"):
             return Completed(0, "")
         raise AssertionError(f"unexpected command: {spec.args}")
 
@@ -154,3 +164,29 @@ def test_disconnect_fails_when_final_dns_verification_fails(
 
     with pytest.raises(privileged.HelperError, match="i.ua failed"):
         privileged.disconnect_profile(profile_id)
+
+
+def test_swanctl_diagnostics_reports_binary_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def fake_run(spec: commands.CommandSpec) -> Completed:
+        if spec.args == ("rpm", "-qf", "/usr/bin/swanctl"):
+            return Completed(0, "strongswan-6.0.0-1.fc40.x86_64\n")
+        return Completed(0, "")
+
+    monkeypatch.setattr(commands, "command_v", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(commands, "resolve_swanctl_path", lambda: "/usr/bin/swanctl")
+    monkeypatch.setattr(commands, "run_command", fake_run)
+    monkeypatch.setattr(
+        privileged,
+        "detect_swanctl_layout",
+        lambda override="": SwanctlLayout(root=tmp_path, source="test"),
+    )
+    monkeypatch.setattr(privileged, "swanctl_files_by_root", lambda: {})
+
+    payload = privileged.swanctl_diagnostics()
+
+    assert payload["command_v_swanctl"] == "/usr/bin/swanctl"
+    assert payload["resolved_swanctl_path"] == "/usr/bin/swanctl"
+    assert payload["swanctl_rpm_owner"] == "strongswan-6.0.0-1.fc40.x86_64"

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import stat
 import tempfile
 from collections.abc import Mapping
@@ -323,6 +322,8 @@ def swanctl_diagnostics(
     if profile_id:
         validate_uuid(profile_id)
     layout = detect_swanctl_layout(override=config_root_override)
+    resolved_swanctl_path = commands.resolve_swanctl_path() or ""
+    swanctl_rpm_owner = _rpm_owner_for_path(resolved_swanctl_path)
     list_conns_completed = commands.run_command(commands.swanctl_list_conns())
     list_sas_completed = commands.run_command(commands.swanctl_list_sas())
     lo_status_completed = commands.run_command(resolvectl_status_interface(LOOPBACK_DNS_INTERFACE))
@@ -349,6 +350,9 @@ def swanctl_diagnostics(
     )
     dns_state_snapshot = load_resolved_plan(profile_id) if profile_id else None
     return {
+        "command_v_swanctl": commands.command_v("swanctl"),
+        "resolved_swanctl_path": resolved_swanctl_path,
+        "swanctl_rpm_owner": swanctl_rpm_owner,
         "selected_swanctl_config_root": str(layout.root),
         "selection_source": layout.source,
         "uses_secrets_d": layout.use_secrets_dir,
@@ -394,8 +398,11 @@ def helper_uid() -> int:
 
 
 def ensure_runtime_tools() -> None:
-    if not shutil.which("swanctl"):
-        raise HelperError("swanctl was not found. Install strongSwan swanctl packages first.")
+    if not commands.resolve_swanctl_path():
+        raise HelperError(
+            "swanctl was not found. Install strongSwan packages first. "
+            "Searched PATH, /usr/bin/swanctl, and /usr/sbin/swanctl."
+        )
 
 
 def error_to_message(exc: Exception) -> str:
@@ -410,6 +417,15 @@ def _run_swanctl_for_output(spec: commands.CommandSpec) -> str:
     if completed.returncode != 0:
         raise HelperError(output or f"{' '.join(spec.args)} failed.")
     return output
+
+
+def _rpm_owner_for_path(path: str) -> str:
+    if not path:
+        return ""
+    if not commands.command_v("rpm"):
+        return "rpm not found"
+    completed = commands.run_command(commands.rpm_query_file_owner(path))
+    return _completed_message(completed)
 
 
 def _completed_message(completed: object) -> str:

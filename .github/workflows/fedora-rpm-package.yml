@@ -50,11 +50,22 @@ jobs:
       - name: Validate swanctl provider
         run: dnf repoquery --whatprovides '*/swanctl'
 
+      - name: Inspect RPM requirements
+        run: |
+          rpm -qpR dist/gic-ipsec-client-*.rpm | tee rpm-requires.txt
+          grep -F 'strongswan' rpm-requires.txt
+          ! grep -F '/usr/sbin/swanctl' rpm-requires.txt
+          ! grep -F '/usr/bin/swanctl' rpm-requires.txt
+          ! grep -F 'strongswan-swanctl' rpm-requires.txt
+
+      - name: Install Fedora runtime dependencies
+        run: dnf -y install strongswan polkit libsecret
+
       - name: Install RPM in clean Fedora container
         run: dnf -y install ./dist/gic-ipsec-client-*-1.x86_64.rpm
 
       - name: Verify installed commands
         run: |
-          which swanctl
+          command -v swanctl
           swanctl --version
           gic-ipsec-client --version

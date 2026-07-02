@@ -13,6 +13,10 @@ from gic_ipsec_client.backend.validators import ProfileValidationError
 from gic_ipsec_client.main import main
 
 
+def _is_swanctl_command(args: tuple[str, ...] | list[str], *tail: str) -> bool:
+    return Path(args[0]).name == "swanctl" and tuple(args[1:]) == tail
+
+
 def test_commands_are_argument_arrays_without_shell() -> None:
     specs = [
         commands.swanctl_load_all(),
@@ -47,7 +51,24 @@ def test_run_command_passes_shell_false(monkeypatch: pytest.MonkeyPatch) -> None
     commands.run_command(commands.swanctl_load_all())
 
     assert observed["shell"] is False
-    assert observed["args"] == ["swanctl", "--load-all"]
+    assert _is_swanctl_command(observed["args"], "--load-all")
+
+
+def test_swanctl_resolution_prefers_path_then_fedora_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    fallback = tmp_path / "usr" / "bin" / "swanctl"
+    fallback.parent.mkdir(parents=True)
+    fallback.write_text("#!/bin/sh\n", encoding="utf-8")
+    fallback.chmod(0o755)
+    monkeypatch.setattr(commands, "SWANCTL_FALLBACK_PATHS", (fallback,))
+
+    monkeypatch.setattr(commands.shutil, "which", lambda name: "/custom/bin/swanctl")
+    assert commands.resolve_swanctl_path() == "/custom/bin/swanctl"
+
+    monkeypatch.setattr(commands.shutil, "which", lambda name: None)
+    assert commands.resolve_swanctl_path() == str(fallback)
 
 
 def test_profile_deletion_only_deletes_owned_uuid_files(tmp_path: Path) -> None:

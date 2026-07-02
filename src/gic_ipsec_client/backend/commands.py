@@ -16,6 +16,8 @@ from gic_ipsec_client.backend.swanctl_paths import (
 )
 from gic_ipsec_client.backend.validators import ProfileValidationError, validate_uuid
 
+SWANCTL_FALLBACK_PATHS = (Path("/usr/bin/swanctl"), Path("/usr/sbin/swanctl"))
+
 
 @dataclass(frozen=True, slots=True)
 class CommandSpec:
@@ -48,24 +50,52 @@ def require_executable(name: str) -> str:
     return path
 
 
+def command_v(name: str) -> str:
+    return shutil.which(name) or ""
+
+
+def resolve_swanctl_path() -> str | None:
+    path = command_v("swanctl")
+    if path:
+        return path
+    for candidate in SWANCTL_FALLBACK_PATHS:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
+
+
+def swanctl_executable() -> str:
+    return resolve_swanctl_path() or "swanctl"
+
+
 def swanctl_load_all() -> CommandSpec:
-    return CommandSpec(("swanctl", "--load-all"), timeout_seconds=30)
+    return CommandSpec((swanctl_executable(), "--load-all"), timeout_seconds=30)
 
 
 def swanctl_initiate(child_name: str) -> CommandSpec:
-    return CommandSpec(("swanctl", "--initiate", "--child", child_name), timeout_seconds=60)
+    return CommandSpec(
+        (swanctl_executable(), "--initiate", "--child", child_name),
+        timeout_seconds=60,
+    )
 
 
 def swanctl_terminate(connection_name: str) -> CommandSpec:
-    return CommandSpec(("swanctl", "--terminate", "--ike", connection_name), timeout_seconds=30)
+    return CommandSpec(
+        (swanctl_executable(), "--terminate", "--ike", connection_name),
+        timeout_seconds=30,
+    )
 
 
 def swanctl_list_sas() -> CommandSpec:
-    return CommandSpec(("swanctl", "--list-sas"), timeout_seconds=20)
+    return CommandSpec((swanctl_executable(), "--list-sas"), timeout_seconds=20)
 
 
 def swanctl_list_conns() -> CommandSpec:
-    return CommandSpec(("swanctl", "--list-conns"), timeout_seconds=20)
+    return CommandSpec((swanctl_executable(), "--list-conns"), timeout_seconds=20)
+
+
+def rpm_query_file_owner(path: str | Path) -> CommandSpec:
+    return CommandSpec(("rpm", "-qf", str(path)), timeout_seconds=10)
 
 
 def systemctl_is_active(service_name: str) -> CommandSpec:

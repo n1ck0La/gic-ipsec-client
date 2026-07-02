@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from gic_ipsec_client import __version__
+from gic_ipsec_client.backend import commands
 from gic_ipsec_client.backend.models import VpnProfile
 from gic_ipsec_client.backend.resolved import (
     DUMMY_DNS_INTERFACE,
@@ -284,8 +285,8 @@ def install_hint(os_release: dict[str, str] | None = None) -> str:
     if family == "debian":
         return (
             "Use packaging/ubuntu/install-deps.sh, or install python3, python3-pip, "
-            "python3-venv, strongswan-swanctl, charon-systemd/strongswan, polkit, "
-            "and libsecret packages."
+            "python3-venv, swanctl, charon-systemd/strongswan, polkit, and libsecret "
+            "packages."
         )
     if family == "fedora":
         return (
@@ -350,9 +351,12 @@ def _service_summary() -> dict[str, str]:
 
 
 def check_dependencies() -> dict[str, Any]:
+    resolved_swanctl_path = commands.resolve_swanctl_path() or ""
     return {
-        "strongSwan installed": bool(shutil.which("swanctl") or shutil.which("strongswan")),
-        "swanctl available": bool(shutil.which("swanctl")),
+        "strongSwan installed": bool(resolved_swanctl_path or shutil.which("strongswan")),
+        "swanctl available": bool(resolved_swanctl_path),
+        "command_v_swanctl": commands.command_v("swanctl"),
+        "resolved_swanctl_path": resolved_swanctl_path,
         "pkexec available": bool(shutil.which("pkexec")),
         "services": _service_summary() if shutil.which("systemctl") else {"systemctl": "not found"},
         "required plugins likely needed": [
@@ -470,6 +474,9 @@ def collect_diagnostics(
         "dns_state_snapshot_saved": bool(swanctl_diagnostics.get("dns_state_snapshot", {})),
     }
     summary["swanctl"] = {
+        "command_v_swanctl": swanctl_diagnostics.get("command_v_swanctl", ""),
+        "resolved_swanctl_path": swanctl_diagnostics.get("resolved_swanctl_path", ""),
+        "rpm_owner": swanctl_diagnostics.get("swanctl_rpm_owner", ""),
         "selected_config_root": swanctl_diagnostics.get("selected_swanctl_config_root", ""),
         "selection_source": swanctl_diagnostics.get("selection_source", ""),
         "/etc/swanctl exists": swanctl_diagnostics.get("root_exists", {}).get(

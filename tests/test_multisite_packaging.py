@@ -92,6 +92,9 @@ def test_packaging_layout_targets_requested_paths() -> None:
     nfpm = (ROOT / "packaging" / "nfpm.yaml").read_text(encoding="utf-8")
     deb_section = nfpm.split("  deb:", 1)[1].split("  rpm:", 1)[0]
     rpm_section = nfpm.split("  rpm:", 1)[1]
+    fedora_spec = (ROOT / "packaging" / "fedora" / "gic-ipsec-client.spec").read_text(
+        encoding="utf-8"
+    )
 
     assert "name: gic-ipsec-client" in nfpm
     assert "dst: /opt/gic-ipsec-client/app" in nfpm
@@ -103,9 +106,14 @@ def test_packaging_layout_targets_requested_paths() -> None:
     assert "dst: /usr/share/polkit-1/actions/com.gicipsec.client.policy" in nfpm
     assert "dst: /etc/gic-ipsec-client/defaults.json" in nfpm
     assert "strongswan-swanctl" not in nfpm
+    assert "/usr/sbin/swanctl" not in rpm_section
+    assert "/usr/bin/swanctl" not in rpm_section
+    assert "strongswan-swanctl" not in rpm_section
     assert "- swanctl" in deb_section
-    assert "- /usr/sbin/swanctl" in rpm_section
     assert "- strongswan" in rpm_section
+    assert "Requires: strongswan" in fedora_spec
+    assert "Requires: /usr/sbin/swanctl" not in fedora_spec
+    assert "Requires: /usr/bin/swanctl" not in fedora_spec
     assert "- python3" in rpm_section
     assert "- polkit" in rpm_section
     assert "- NetworkManager" in rpm_section
@@ -156,8 +164,14 @@ def test_fedora_package_smoke_workflow_installs_built_rpm() -> None:
     assert "actions/upload-artifact@v4" in workflow
     assert "actions/download-artifact@v4" in workflow
     assert "bash ./packaging/build-packages.sh" in workflow
+    assert "dnf -y install strongswan polkit libsecret" in workflow
     assert "dnf -y install ./dist/gic-ipsec-client-*-1.x86_64.rpm" in workflow
-    assert "which swanctl" in workflow
+    assert "rpm -qpR dist/gic-ipsec-client-*.rpm" in workflow
+    assert "grep -F 'strongswan' rpm-requires.txt" in workflow
+    assert "! grep -F '/usr/sbin/swanctl' rpm-requires.txt" in workflow
+    assert "! grep -F '/usr/bin/swanctl' rpm-requires.txt" in workflow
+    assert "! grep -F 'strongswan-swanctl' rpm-requires.txt" in workflow
+    assert "command -v swanctl" in workflow
     assert "swanctl --version" in workflow
     assert "gic-ipsec-client --version" in workflow
     assert "dnf repoquery --whatprovides '*/swanctl'" in workflow
