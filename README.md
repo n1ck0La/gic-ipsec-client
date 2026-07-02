@@ -47,6 +47,7 @@ python -m gic_ipsec_client.helper.cli --help
 ## Packaging
 
 Install nfpm.
+
 Ubuntu:
 ```bash
 echo 'deb [trusted=yes] https://repo.goreleaser.com/apt/ /' | sudo tee /etc/apt/sources.list.d/goreleaser.list
@@ -69,13 +70,6 @@ Then run:
 
 ```bash
 bash ./packaging/build-packages.sh
-```
-
-On Fedora, confirm the package that provides `swanctl` before validating RPM
-dependencies:
-
-```bash
-dnf repoquery --whatprovides '*/swanctl'
 ```
 
 Expected outputs:
