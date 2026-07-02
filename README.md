@@ -1,59 +1,34 @@
-# GIC IPsec Client
+# SEE IPsec Client
 
-GIC (GUI IPsec Client) is a Linux desktop VPN client for IKEv2 remote access
-profiles. It uses the system strongSwan `swanctl`/VICI backend and does not
-implement IPsec, IKE, ESP, cryptography, kernel tunnel handling, packet capture,
-or a password store.
+SEE IPsec Client is a Linux desktop VPN client for multiple IKEv2 remote-access
+profiles. It uses the system strongSwan `swanctl`/VICI backend and delegates
+root-only operations to a small `pkexec` helper.
 
-The first profile type targets FortiGate-compatible IKEv2 remote access with a
-PSK for gateway/IKE authentication and EAP-MSCHAPv2 username/password
-authentication for the user.
+The app does not ship any customer or site profile. Users create or import
+profiles, and secrets are stored only through Linux Secret Service/keyring.
 
-## What It Does
+## Features
 
-- Provides a PySide6/Qt6 desktop GUI for profiles, connect/disconnect, status,
-  logs, diagnostics, and sanitized debug bundle export.
-- Renders validated strongSwan `swanctl` connection and secrets files.
-- Uses UUIDs for root-side config filenames.
-- Invokes privileged work through `pkexec gic-ipsec-helper`.
-- Redacts PSKs and passwords from logs and debug bundles.
-- Can save user secrets only through Python keyring/libsecret when available.
-
-## What It Does Not Do
-
-- It does not implement IPsec/IKE crypto or packet processing.
-- It does not replace strongSwan.
-- It does not silently install packages.
-- It does not save plaintext secrets when no secure keyring is available.
-- It does not support FortiClient-only EMS/ZTNA/proprietary overlay features.
-
-## Ubuntu Setup
-
-```bash
-cd gic-ipsec-client
-./packaging/ubuntu/install-deps.sh
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install -e '.[dev]'
-```
-
-Package names vary by Ubuntu release. The install script checks likely package
-names and prints actionable messages when a package is unavailable.
-
-## Fedora Setup
-
-```bash
-cd gic-ipsec-client
-./packaging/fedora/install-deps.sh
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install -e '.[dev]'
-```
-
-NetworkManager-libreswan can be useful for other VPN workflows, but it is not
-the primary backend for GIC.
+- Multi-profile GUI for add, edit, clone, delete, import, export, connect,
+  disconnect, DNS testing, and diagnostics export.
+- Nested profile model for gateway, authentication, traffic, DNS, crypto, and
+  platform settings.
+- Dynamic `swanctl` rendering from profile data only.
+- Fedora and Debian/Ubuntu `swanctl` config-root detection.
+- Split and full tunnel rendering.
+- App-managed Fedora `systemd-resolved` DNS fallback with rollback snapshots.
+- Sanitized diagnostics and debug bundles.
+- nfpm-based `.deb` and `.rpm` packaging skeleton.
 
 ## Development
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e '.[dev]'
+pytest
+ruff check .
+```
 
 Run the GUI:
 
@@ -61,49 +36,32 @@ Run the GUI:
 python -m gic_ipsec_client
 ```
 
-Run the helper directly for development:
+Run the helper:
 
 ```bash
-gic-ipsec-helper --help
+see-ipsec-helper --help
 ```
 
-Build a local wheel:
+## Packaging
+
+Install nfpm, then run:
 
 ```bash
-python -m pip install build
-python -m build
+./packaging/build-packages.sh
 ```
 
-Run tests and lint:
+Expected outputs:
 
-```bash
-pytest
-ruff check .
-```
+- `dist/see-ipsec-client_<version>_amd64.deb`
+- `dist/see-ipsec-client-<version>-1.x86_64.rpm`
 
-## FortiGate Profile Flow
+The package layout installs:
 
-1. Create a profile with the FortiGate preset.
-2. Enter the gateway FQDN/IP, username/EAP identity, PSK, and user password.
-   Use Advanced > Strict remote ID only when the gateway requires a fixed IKE
-   identity.
-3. Start with UDP transport and IKE port 500.
-4. Choose Split tunnel for internal routes only or Full tunnel for all traffic.
-   Split tunnel requires at least one remote route; the editor can add the SEE
-   FortiGate route preset list in one click. Full tunnel requires an
-   IPsec-to-WAN FortiGate firewall policy with NAT enabled.
-5. Use Test profile render before connecting.
-6. Connect. GIC detects the active `swanctl` config root, writes
-   `conf.d/gic-<uuid>.conf` through the helper, runs `swanctl --load-all`,
-   verifies the generated connection appears in `swanctl --list-conns`, and
-   only then initiates the child SA.
-
-## Known Limitations
-
-- EAP-MSCHAPv2 is implemented first. EAP-TTLS/PAP is a future extension.
-- TCP transport is treated as a compatibility mode and still needs real gateway
-  testing.
-- DNS integration depends on the installed strongSwan resolve or
-  systemd-resolved integration.
-- Real connection behavior must be tested with target FortiGate and strongSwan
-  packages on each distro release.
+- `/opt/see-ipsec-client/app`
+- `/opt/see-ipsec-client/venv`
+- `/usr/bin/see-ipsec-client`
+- `/usr/libexec/see-ipsec-client/see-ipsec-helper`
+- `/usr/share/applications/see-ipsec-client.desktop`
+- `/usr/share/icons/hicolor/256x256/apps/see-ipsec-client.png`
+- `/usr/share/polkit-1/actions/com.see.ipsecclient.policy`
+- `/etc/see-ipsec-client/defaults.json`

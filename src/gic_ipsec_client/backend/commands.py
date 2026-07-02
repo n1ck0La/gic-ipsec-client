@@ -9,6 +9,8 @@ from pathlib import Path
 
 from gic_ipsec_client.backend.swanctl_paths import (
     KNOWN_SWANCTL_ROOTS,
+    LEGACY_PROFILE_FILE_PREFIX,
+    PROFILE_FILE_PREFIX,
     SwanctlLayout,
     detect_swanctl_layout,
 )
@@ -96,7 +98,7 @@ def nmcli_device_show() -> CommandSpec:
 
 
 def build_pkexec_helper_command(subcommand: str, *args: str) -> CommandSpec:
-    return CommandSpec(("pkexec", "gic-ipsec-helper", subcommand, *args), timeout_seconds=120)
+    return CommandSpec(("pkexec", "see-ipsec-helper", subcommand, *args), timeout_seconds=120)
 
 
 def profile_paths(
@@ -130,7 +132,7 @@ def delete_profile_files(
     config_root_override: str | Path | None = None,
     all_known_roots: bool = False,
 ) -> list[Path]:
-    """Delete only the UUID-named files GIC owns below the configured swanctl roots."""
+    """Delete only the UUID-named files SEE IPsec owns below configured swanctl roots."""
 
     validate_uuid(profile_id)
     layouts = (
@@ -139,11 +141,18 @@ def delete_profile_files(
         else [layout or detect_swanctl_layout(override=config_root_override)]
     )
     deleted: list[Path] = []
-    expected_names = {f"gic-{profile_id}.conf", f"gic-{profile_id}.secrets"}
+    expected_names = {
+        f"{PROFILE_FILE_PREFIX}{profile_id}.conf",
+        f"{PROFILE_FILE_PREFIX}{profile_id}.secrets",
+        f"{LEGACY_PROFILE_FILE_PREFIX}{profile_id}.conf",
+        f"{LEGACY_PROFILE_FILE_PREFIX}{profile_id}.secrets",
+    }
     for selected_layout in layouts:
         targets = (
             selected_layout.profile_config_path(profile_id),
             selected_layout.profile_secrets_path(profile_id),
+            selected_layout.conf_dir / f"{LEGACY_PROFILE_FILE_PREFIX}{profile_id}.conf",
+            selected_layout.secrets_dir / f"{LEGACY_PROFILE_FILE_PREFIX}{profile_id}.secrets",
         )
         for path in targets:
             if not _is_under(path, selected_layout.root):

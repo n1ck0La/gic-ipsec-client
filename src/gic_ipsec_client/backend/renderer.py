@@ -50,6 +50,14 @@ def _remote_ts(profile: VpnProfile) -> str:
     return "0.0.0.0/0"
 
 
+def _remote_ike_id(profile: VpnProfile) -> str:
+    if profile.gateway.remote_id_mode == "any":
+        return "%any"
+    if profile.gateway.remote_id_mode in {"fqdn", "ip"}:
+        return profile.gateway.host
+    return profile.gateway.remote_id or "%any"
+
+
 def render_profile_config(profile: VpnProfile, *, debug: bool = False) -> str:
     """Render the non-secret `swanctl.conf` connection section."""
 
@@ -58,7 +66,7 @@ def render_profile_config(profile: VpnProfile, *, debug: bool = False) -> str:
     child = profile.child_name
     eap_identity = profile.eap_identity or profile.username
     local_ike_id = profile.local_id or eap_identity
-    remote_ike_id = profile.remote_id or "%any"
+    remote_ike_id = _remote_ike_id(profile)
 
     lines = [
         "connections {",
@@ -113,8 +121,12 @@ def render_secret_config(profile: VpnProfile, *, debug: bool = False) -> str:
     conn = profile.connection_name
     psk = "<redacted>" if debug else profile.psk
     password = "<redacted>" if debug else profile.password
-    local_id = profile.local_id or "%any"
-    remote_id = profile.remote_id or "%any"
+    if profile.gateway.remote_id_mode == "any":
+        local_id = "%any"
+        remote_id = "%any"
+    else:
+        local_id = profile.local_id or "%any"
+        remote_id = _remote_ike_id(profile)
     eap_identity = profile.eap_identity or profile.username
 
     lines = [

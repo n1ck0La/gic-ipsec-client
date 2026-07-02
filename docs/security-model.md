@@ -1,7 +1,7 @@
 # Security Model
 
-GIC is a GUI and orchestration layer around system strongSwan. The desktop GUI
-runs as the normal user. Root-only work is delegated to `gic-ipsec-helper`
+SEE IPsec Client is a GUI and orchestration layer around system strongSwan. The
+desktop GUI runs as the normal user. Root-only work is delegated to `see-ipsec-helper`
 through `pkexec`.
 
 ## Boundaries
@@ -9,22 +9,22 @@ through `pkexec`.
 - The GUI never writes directly to system `swanctl` config roots.
 - The helper accepts structured subcommands only.
 - The helper reads JSON request files only from
-  `/run/user/<uid>/gic-ipsec-client/helper-requests`.
+  `/run/user/<uid>/see-ipsec-client/helper-requests`.
 - Request files must be owned by the invoking user, must not be symlinks, and
   must not be group- or world-writable.
 - Rendered config filenames are derived from validated UUIDs.
-- Profile deletion accepts UUIDs only and deletes only `gic-<uuid>` files under
-  the known system `swanctl` roots.
+- Profile deletion accepts UUIDs only and deletes only `see-ipsec-<uuid>` files
+  under the known system `swanctl` roots.
 
 ## Commands
 
-All process execution uses argument arrays. GIC must not call arbitrary shell
+All process execution uses argument arrays. SEE must not call arbitrary shell
 strings and must not use `shell=True`.
 
 ## Secrets
 
 The GUI can ask for secrets every time or save them through Python keyring with a
-secure libsecret-compatible backend. If no secure keyring is available, GIC
+secure libsecret-compatible backend. If no secure keyring is available, SEE
 warns and refuses plaintext local storage.
 
 Root-side strongSwan secret material exists because strongSwan needs it. Flat
@@ -37,5 +37,5 @@ mode.
 
 ## Out Of Scope
 
-GIC does not implement IPsec, IKEv2, ESP, cryptography, packet capture, a kernel
+SEE does not implement IPsec, IKEv2, ESP, cryptography, packet capture, a kernel
 tunnel, or its own password store.

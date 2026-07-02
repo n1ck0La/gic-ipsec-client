@@ -21,6 +21,10 @@ python3-pip
 strongswan
 strongswan-swanctl
 polkit
+NetworkManager
+systemd-resolved
+iproute
+bind-utils
 libsecret
 libsecret-devel
 "
@@ -39,4 +43,4 @@ echo
 echo "Install command:"
 echo "  sudo dnf install$installable"
 echo
-echo "NetworkManager-libreswan is optional fallback tooling, not GIC's primary backend."
+echo "NetworkManager-libreswan is optional fallback tooling, not SEE IPsec Client's primary backend."

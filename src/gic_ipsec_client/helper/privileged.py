@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from gic_ipsec_client.backend import commands
-from gic_ipsec_client.backend.models import VpnProfile
+from gic_ipsec_client.backend.models import CONNECTION_PREFIX, LEGACY_CONNECTION_PREFIX, VpnProfile
 from gic_ipsec_client.backend.renderer import render_profile_files
 from gic_ipsec_client.backend.resolved import (
     DUMMY_DNS_INTERFACE,
@@ -45,11 +45,11 @@ class HelperError(RuntimeError):
     """User-facing privileged helper error."""
 
 
-RUNTIME_PROFILE_ROOT = Path("/run/gic-ipsec-client/profiles")
+RUNTIME_PROFILE_ROOT = Path("/run/see-ipsec-client/profiles")
 
 
 def request_dir_for_uid(uid: int) -> Path:
-    return Path("/run/user") / str(uid) / "gic-ipsec-client" / "helper-requests"
+    return Path("/run/user") / str(uid) / "see-ipsec-client" / "helper-requests"
 
 
 def validate_request_path(path: Path, *, uid: int) -> Path:
@@ -118,10 +118,14 @@ def _runtime_profile_path(profile_id: str) -> Path:
 def _write_runtime_profile(profile: VpnProfile) -> None:
     payload = {
         "id": profile.id,
+        "name": profile.name,
         "split_tunnel_enabled": profile.split_tunnel_enabled,
         "remote_routes": profile.remote_routes,
         "dns_servers": profile.dns_servers,
         "dns_search_domains": profile.dns_search_domains,
+        "dns_test_names": profile.dns_test_names,
+        "dns_linux_strategy": profile.dns.linux_strategy,
+        "dns_interface": profile.platform.dns_interface,
     }
     path = _runtime_profile_path(profile.id)
     _atomic_write(path, json.dumps(payload, indent=2, sort_keys=True), mode=0o600)
@@ -195,7 +199,7 @@ def load_profile() -> int:
 
 def connect_profile(profile_id: str, *, config_root_override: str = "") -> int:
     validate_uuid(profile_id)
-    connection_name = f"gic-{profile_id}"
+    connection_name = f"{CONNECTION_PREFIX}{profile_id}"
     child_name = f"{connection_name}-child"
     load_completed = commands.run_command(commands.swanctl_load_all())
     if load_completed.returncode != 0:
@@ -226,6 +230,9 @@ def connect_profile(profile_id: str, *, config_root_override: str = "") -> int:
         dns_servers=[str(item) for item in runtime_profile.get("dns_servers", []) or []],
         search_domains=[str(item) for item in runtime_profile.get("dns_search_domains", []) or []],
         split_tunnel_enabled=bool(runtime_profile.get("split_tunnel_enabled", True)),
+        test_names=[str(item) for item in runtime_profile.get("dns_test_names", []) or []],
+        linux_strategy=str(runtime_profile.get("dns_linux_strategy", "auto")),
+        preferred_interface=str(runtime_profile.get("dns_interface", "auto")),
         run_command=commands.run_command,
     )
     if dns_errors:
@@ -240,7 +247,7 @@ def disconnect_profile(profile_id: str) -> int:
         run_command=commands.run_command,
         cleanup_on_success=False,
     )
-    completed = commands.run_command(commands.swanctl_terminate(f"gic-{profile_id}"))
+    completed = commands.run_command(commands.swanctl_terminate(f"{CONNECTION_PREFIX}{profile_id}"))
     warnings = _dns_warning_lines(profile_id)
     if completed.returncode != 0:
         warnings.append(_completed_message(completed) or "swanctl --terminate failed.")
@@ -255,7 +262,21 @@ def disconnect_profile(profile_id: str) -> int:
     sa_errors: list[str] = []
     if list_sas_completed.returncode != 0:
         sa_errors.append(list_sas_output or "swanctl --list-sas failed.")
-    elif f"gic-{profile_id}" in list_sas_output:
+    elif f"{LEGACY_CONNECTION_PREFIX}{profile_id}" in list_sas_output:
+        legacy_completed = commands.run_command(
+            commands.swanctl_terminate(f"{LEGACY_CONNECTION_PREFIX}{profile_id}")
+        )
+        if legacy_completed.returncode != 0:
+            warnings.append(
+                _completed_message(legacy_completed) or "legacy swanctl --terminate failed."
+            )
+        list_sas_completed = commands.run_command(commands.swanctl_list_sas())
+        list_sas_output = _completed_message(list_sas_completed)
+        if list_sas_completed.returncode != 0:
+            sa_errors.append(list_sas_output or "swanctl --list-sas failed.")
+        elif _selected_sa_active(profile_id, list_sas_output):
+            sa_errors.append("Selected IKE_SA remains active after disconnect.")
+    elif _selected_sa_active(profile_id, list_sas_output):
         sa_errors.append("Selected IKE_SA remains active after disconnect.")
     errors = [*dns_errors, *verify_errors, *sa_errors]
     if errors:
@@ -278,7 +299,12 @@ def status_profile(profile_id: str) -> str:
     output = (completed.stdout or "") + (completed.stderr or "")
     if completed.returncode != 0:
         return "Failed"
-    return "Connected" if f"gic-{profile_id}" in output else "Disconnected"
+    return "Connected" if _selected_sa_active(profile_id, output) else "Disconnected"
+
+
+def _selected_sa_active(profile_id: str, output: str) -> bool:
+    prefixes = (CONNECTION_PREFIX, LEGACY_CONNECTION_PREFIX)
+    return any(prefix + profile_id in output for prefix in prefixes)
 
 
 def list_sas() -> str:
@@ -310,7 +336,7 @@ def swanctl_diagnostics(
     )
     list_conns_output = _completed_message(list_conns_completed)
     profile_config = layout.profile_config_path(profile_id) if profile_id else None
-    connection_name = f"gic-{profile_id}" if profile_id else ""
+    connection_name = f"{CONNECTION_PREFIX}{profile_id}" if profile_id else ""
     child_name = f"{connection_name}-child" if profile_id else ""
     loaded = (
         profile_loaded_in_list_conns(

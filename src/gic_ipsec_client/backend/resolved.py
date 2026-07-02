@@ -10,34 +10,10 @@ from pathlib import Path
 from gic_ipsec_client.backend import commands
 from gic_ipsec_client.backend.validators import validate_uuid
 
-FORTIGATE_ROUTE_PRESETS = (
-    "192.168.4.0/24",
-    "192.168.8.0/24",
-    "192.168.12.0/24",
-    "192.168.16.0/24",
-    "192.168.20.0/24",
-    "192.168.24.0/24",
-    "192.168.52.0/24",
-    "192.168.64.0/24",
-    "192.168.68.0/24",
-    "192.168.88.0/24",
-    "192.168.100.0/24",
-    "192.168.104.0/24",
-    "192.168.108.0/24",
-    "192.168.254.0/24",
-)
 LOOPBACK_DNS_INTERFACE = "lo"
 DUMMY_DNS_INTERFACE = "seeipsec0"
 RESOLVED_STATE_ROOT = Path("/run/see-ipsec-client")
 RunCommand = Callable[[commands.CommandSpec], object]
-INTERNAL_DNS_TEST_HOSTS = {
-    "see-radars.com": "nextcloud.see-radars.com",
-    "seetech.local": "srv-dc-01.seetech.local",
-}
-EXPECTED_INTERNAL_DNS_RESULTS = {
-    "nextcloud.see-radars.com": "192.168.88.65",
-    "srv-dc-01.seetech.local": "192.168.88.203",
-}
 
 
 def _optional_bool(value: object) -> bool | None:
@@ -225,13 +201,20 @@ def is_ssh_session() -> bool:
     return any(os.environ.get(name) for name in ("SSH_CLIENT", "SSH_CONNECTION", "SSH_TTY"))
 
 
-def internal_dns_test_names(search_domains: list[str] | tuple[str, ...]) -> list[str]:
+def internal_dns_test_names(
+    search_domains: list[str] | tuple[str, ...],
+    test_names: list[str] | tuple[str, ...] = (),
+) -> list[str]:
     names: list[str] = []
+    for name in test_names:
+        clean_name = name.strip()
+        if clean_name:
+            names.append(clean_name)
     for domain in search_domains:
         clean = domain.strip().lstrip("~")
         if not clean:
             continue
-        names.append(INTERNAL_DNS_TEST_HOSTS.get(clean, clean))
+        names.append(clean)
     return list(dict.fromkeys(names))
 
 
@@ -437,11 +420,18 @@ def apply_resolved_dns(
     dns_servers: list[str],
     search_domains: list[str],
     split_tunnel_enabled: bool,
+    test_names: list[str] | None = None,
+    linux_strategy: str = "auto",
+    preferred_interface: str = "auto",
     run_command: RunCommand = commands.run_command,
     state_root: Path = RESOLVED_STATE_ROOT,
 ) -> list[str]:
     validate_uuid(profile_id)
     report: dict[str, object] = _new_dns_apply_report(profile_id)
+    if linux_strategy == "disabled":
+        report["notes"] = ["Profile DNS strategy is disabled."]
+        save_dns_apply_report(profile_id, report, state_root=state_root)
+        return []
     if not dns_servers:
         report["notes"] = ["No DNS servers configured."]
         save_dns_apply_report(profile_id, report, state_root=state_root)
@@ -461,6 +451,9 @@ def apply_resolved_dns(
             profile_id=profile_id,
             dns_servers=dns_servers,
             search_domains=search_domains,
+            test_names=test_names or [],
+            linux_strategy=linux_strategy,
+            preferred_interface=preferred_interface,
             run_command=run_command,
             state_root=state_root,
             report=report,
@@ -485,6 +478,7 @@ def apply_resolved_dns(
         interface=interface,
         dns_servers=dns_servers,
         search_domains=search_domains,
+        test_names=test_names or [],
         split_tunnel_enabled=split_tunnel_enabled,
         run_command=run_command,
         state_root=state_root,
@@ -945,16 +939,32 @@ def _query_links(output: str) -> list[str]:
     return links
 
 
-def _query_confirms_dns_path(*, name: str, output: str, selected_interface: str) -> bool:
-    expected_ip = EXPECTED_INTERNAL_DNS_RESULTS.get(name)
-    if expected_ip and re.search(rf"(?<![\d.]){re.escape(expected_ip)}(?![\d.])", output):
+def _answer_tokens(output: str) -> set[str]:
+    tokens: set[str] = set()
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith(";") or line.startswith("--") or " " in line:
+            continue
+        tokens.add(line.rstrip("."))
+    return tokens
+
+
+def _query_confirms_dns_path(
+    *,
+    output: str,
+    selected_interface: str,
+    direct_answers: set[str],
+) -> bool:
+    links = _query_links(output)
+    if links and not all(link == selected_interface for link in links):
+        return False
+    if direct_answers and direct_answers & _answer_tokens(output):
         return True
     if not output.strip():
         return False
-    links = _query_links(output)
     if not links:
         return True
-    return all(link == selected_interface for link in links)
+    return True
 
 
 def _verify_dns_interface(
@@ -962,33 +972,45 @@ def _verify_dns_interface(
     interface: str,
     dns_servers: list[str],
     search_domains: list[str],
+    test_names: list[str],
     run_command: RunCommand,
     report: dict[str, object],
 ) -> bool:
     status_spec = resolvectl_status_interface(interface)
-    _run_verification_command(
+    status = _run_verification_command(
         status_spec,
         run_command=run_command,
         report=report,
         phase=f"verify-status-{interface}",
     )
-    names = internal_dns_test_names(search_domains)
+    names = internal_dns_test_names(search_domains, test_names)
+    if not names:
+        status_text = _completed_message(status)
+        return all(server in status_text for server in dns_servers)
     confirmed = False
     for name in names:
+        direct_answers: set[str] = set()
         for server in dns_servers:
             dig_direct_spec = dig_short(server, name)
-            _run_verification_command(
+            direct = _run_verification_command(
                 dig_direct_spec,
                 run_command=run_command,
                 report=report,
                 phase=f"verify-dig-direct-{interface}",
             )
+            if getattr(direct, "returncode", 1) == 0:
+                direct_answers.update(_answer_tokens(_completed_message(direct)))
         dig_stub_spec = dig_short("127.0.0.53", name)
-        _run_verification_command(
+        stub = _run_verification_command(
             dig_stub_spec,
             run_command=run_command,
             report=report,
             phase=f"verify-dig-stub-{interface}",
+        )
+        stub_answers = (
+            _answer_tokens(_completed_message(stub))
+            if getattr(stub, "returncode", 1) == 0
+            else set()
         )
         query_spec = resolvectl_query(name)
         query = _run_verification_command(
@@ -998,10 +1020,22 @@ def _verify_dns_interface(
             phase=f"verify-query-{interface}",
         )
         query_text = _completed_message(query)
-        if getattr(query, "returncode", 1) == 0 and _query_confirms_dns_path(
-            name=name,
+        query_returncode = getattr(query, "returncode", 1)
+        query_links = _query_links(query_text)
+        query_links_ok = not query_links or all(link == interface for link in query_links)
+        if (
+            query_returncode == 0
+            and query_links_ok
+            and direct_answers
+            and stub_answers
+            and direct_answers & stub_answers
+        ):
+            confirmed = True
+            continue
+        if query_returncode == 0 and _query_confirms_dns_path(
             output=query_text,
             selected_interface=interface,
+            direct_answers=direct_answers,
         ):
             confirmed = True
     return confirmed
@@ -1012,44 +1046,75 @@ def _apply_split_dns_with_fallback(
     profile_id: str,
     dns_servers: list[str],
     search_domains: list[str],
+    test_names: list[str],
+    linux_strategy: str,
+    preferred_interface: str,
     run_command: RunCommand,
     state_root: Path,
     report: dict[str, object],
 ) -> list[str]:
-    lo_messages = _apply_dns_to_interface(
-        profile_id=profile_id,
-        interface=LOOPBACK_DNS_INTERFACE,
-        dns_servers=dns_servers,
-        search_domains=search_domains,
-        split_tunnel_enabled=True,
-        run_command=run_command,
-        state_root=state_root,
-        report=report,
-    )
-    if _verify_dns_interface(
-        interface=LOOPBACK_DNS_INTERFACE,
-        dns_servers=dns_servers,
-        search_domains=search_domains,
-        run_command=run_command,
-        report=report,
-    ):
-        report["success"] = True
-        report["verified_interface"] = LOOPBACK_DNS_INTERFACE
-        return lo_messages
+    if linux_strategy in {"auto", "resolved-lo"}:
+        lo_messages = _apply_dns_to_interface(
+            profile_id=profile_id,
+            interface=LOOPBACK_DNS_INTERFACE,
+            dns_servers=dns_servers,
+            search_domains=search_domains,
+            split_tunnel_enabled=True,
+            run_command=run_command,
+            state_root=state_root,
+            report=report,
+        )
+        if _verify_dns_interface(
+            interface=LOOPBACK_DNS_INTERFACE,
+            dns_servers=dns_servers,
+            search_domains=search_domains,
+            test_names=test_names,
+            run_command=run_command,
+            report=report,
+        ):
+            report["success"] = True
+            report["verified_interface"] = LOOPBACK_DNS_INTERFACE
+            return lo_messages
+        if linux_strategy == "resolved-lo":
+            message = "VPN DNS verification failed for lo."
+            errors = report.setdefault("errors", [])
+            if isinstance(errors, list):
+                errors.append(message)
+            return [*lo_messages, message]
+    else:
+        lo_messages = []
 
-    report["fallback_used"] = True
-    route_spec = ip_route_get("1.1.1.1")
-    route = run_command(route_spec)
-    _record_completed(report, route_spec, route, phase="fallback-detect-interface")
-    if getattr(route, "returncode", 1) != 0:
+    if linux_strategy == "networkmanager":
+        message = "NetworkManager DNS strategy is not implemented yet."
+        errors = report.setdefault("errors", [])
+        if isinstance(errors, list):
+            errors.append(message)
+        return [*lo_messages, message]
+
+    fallback_interface = ""
+    if preferred_interface and preferred_interface != "auto":
+        fallback_interface = preferred_interface
+    else:
+        report["fallback_used"] = True
+        route_spec = ip_route_get("1.1.1.1")
+        route = run_command(route_spec)
+        _record_completed(report, route_spec, route, phase="fallback-detect-interface")
+        if getattr(route, "returncode", 1) != 0:
+            message = "Could not detect default interface for DNS fallback."
+            errors = report.setdefault("errors", [])
+            if isinstance(errors, list):
+                errors.append(message)
+            return [*lo_messages, message]
+        fallback_interface = parse_default_interface(str(getattr(route, "stdout", "")))
+    if not fallback_interface:
         message = "Could not detect default interface for DNS fallback."
         errors = report.setdefault("errors", [])
         if isinstance(errors, list):
             errors.append(message)
         return [*lo_messages, message]
-    fallback_interface = parse_default_interface(str(getattr(route, "stdout", "")))
-    if not fallback_interface:
-        message = "Could not detect default interface for DNS fallback."
+
+    if fallback_interface == LOOPBACK_DNS_INTERFACE:
+        message = "Default DNS fallback interface resolved to loopback."
         errors = report.setdefault("errors", [])
         if isinstance(errors, list):
             errors.append(message)
@@ -1076,6 +1141,7 @@ def _apply_split_dns_with_fallback(
         interface=fallback_interface,
         dns_servers=dns_servers,
         search_domains=search_domains,
+        test_names=test_names,
         run_command=run_command,
         report=report,
     ):

@@ -1,0 +1,53 @@
+name: see-ipsec-client
+arch: amd64
+platform: linux
+version: ${VERSION}
+section: net
+priority: optional
+maintainer: SEE IPsec Client contributors
+description: strongSwan-backed multi-site IKEv2 VPN client
+vendor: SEE
+homepage: https://example.invalid/see-ipsec-client
+license: MIT
+contents:
+  - src: ./build/package/app
+    dst: /opt/see-ipsec-client/app
+  - src: ./build/package/venv
+    dst: /opt/see-ipsec-client/venv
+  - src: ./packaging/bin/see-ipsec-client
+    dst: /usr/bin/see-ipsec-client
+    file_info:
+      mode: 0755
+  - src: ./packaging/libexec/see-ipsec-helper
+    dst: /usr/libexec/see-ipsec-client/see-ipsec-helper
+    file_info:
+      mode: 0755
+  - src: ./packaging/see-ipsec-client.desktop
+    dst: /usr/share/applications/see-ipsec-client.desktop
+  - src: ./src/gic_ipsec_client/resources/app_icon.svg
+    dst: /usr/share/icons/hicolor/scalable/apps/see-ipsec-client.svg
+  - src: ./packaging/polkit/com.see.ipsecclient.policy
+    dst: /usr/share/polkit-1/actions/com.see.ipsecclient.policy
+  - src: ./packaging/defaults.json
+    dst: /etc/see-ipsec-client/defaults.json
+overrides:
+  deb:
+    depends:
+      - strongswan
+      - swanctl
+      - python3
+      - policykit-1
+      - network-manager
+      - systemd-resolved
+      - iproute2
+      - dnsutils
+  rpm:
+    depends:
+      - strongswan
+      - strongswan-swanctl
+      - python3
+      - polkit
+      - NetworkManager
+      - systemd-resolved
+      - iproute
+      - bind-utils

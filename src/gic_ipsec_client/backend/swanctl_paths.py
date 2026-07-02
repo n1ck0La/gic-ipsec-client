@@ -10,7 +10,8 @@ from pathlib import Path
 DEBIAN_SWANCTL_ROOT = Path("/etc/swanctl")
 FEDORA_SWANCTL_ROOT = Path("/etc/strongswan/swanctl")
 KNOWN_SWANCTL_ROOTS = (DEBIAN_SWANCTL_ROOT, FEDORA_SWANCTL_ROOT)
-PROFILE_FILE_PREFIX = "gic-"
+PROFILE_FILE_PREFIX = "see-ipsec-"
+LEGACY_PROFILE_FILE_PREFIX = "gic-"
 
 CommandRunner = Callable[[tuple[str, ...], int], str]
 

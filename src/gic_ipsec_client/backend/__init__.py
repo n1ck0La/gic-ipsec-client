@@ -1,1 +1,1 @@
-"""Backend primitives for GIC."""
+"""Backend primitives for SEE IPsec Client."""

@@ -22,9 +22,14 @@ python3-venv
 strongswan-swanctl
 charon-systemd
 strongswan
+swanctl
 strongswan-libcharon-extra-plugins
 policykit-1
 polkitd
+network-manager
+systemd-resolved
+iproute2
+dnsutils
 libsecret-1-0
 libsecret-tools
 "

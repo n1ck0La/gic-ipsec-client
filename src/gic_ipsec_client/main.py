@@ -11,7 +11,7 @@ def main(argv: list[str] | None = None) -> int:
         from gic_ipsec_client.gui.main_window import MainWindow
     except ImportError as exc:
         print(
-            "PySide6 is required for the GIC desktop GUI. "
+            "PySide6 is required for the SEE IPsec desktop GUI. "
             "Install the project with GUI dependencies first.",
             file=sys.stderr,
         )
@@ -19,7 +19,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     app = QApplication(args)
-    app.setApplicationName("GIC IPsec Client")
+    app.setApplicationName("SEE IPsec Client")
     window = MainWindow()
     window.show()
     return app.exec()

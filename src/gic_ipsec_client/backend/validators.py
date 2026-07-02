@@ -106,8 +106,28 @@ def validate_profile(profile: VpnProfile, *, require_secrets: bool = True) -> No
 
     if profile.transport not in {"udp", "tcp", "auto"}:
         errors.append("transport must be one of: udp, tcp, auto.")
+    if profile.gateway.remote_id_mode not in {"any", "fqdn", "ip", "custom"}:
+        errors.append("gateway.remote_id_mode must be one of: any, fqdn, ip, custom.")
     if not 1 <= int(profile.ike_port) <= 65535:
         errors.append("ike_port must be between 1 and 65535.")
+    if profile.auth.ike_auth != "psk":
+        errors.append("auth.ike_auth must be psk.")
+    if profile.auth.eap_method != "eap-mschapv2":
+        errors.append("auth.eap_method must be eap-mschapv2.")
+    if profile.secret_storage != "keyring":
+        errors.append("auth.secret_storage must be keyring.")
+    if profile.traffic.mode not in {"split", "full"}:
+        errors.append("traffic.mode must be split or full.")
+    if profile.dns.linux_strategy not in {
+        "auto",
+        "resolved-default-interface",
+        "resolved-lo",
+        "networkmanager",
+        "disabled",
+    }:
+        errors.append("dns.linux_strategy is not supported.")
+    if profile.platform.config_root not in {"auto", "/etc/swanctl", "/etc/strongswan/swanctl"}:
+        errors.append("platform.config_root is not supported.")
     if require_secrets and not profile.psk:
         errors.append("psk is required before rendering strongSwan secrets.")
     if require_secrets and not profile.password:

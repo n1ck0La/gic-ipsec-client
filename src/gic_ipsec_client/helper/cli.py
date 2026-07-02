@@ -9,7 +9,7 @@ from gic_ipsec_client.helper import privileged
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="gic-ipsec-helper")
+    parser = argparse.ArgumentParser(prog="see-ipsec-helper")
     subcommands = parser.add_subparsers(dest="command", required=True)
 
     render = subcommands.add_parser(
@@ -19,7 +19,7 @@ def build_parser() -> argparse.ArgumentParser:
     render.add_argument("--request", required=True, type=Path)
     render.add_argument("--config-root", default="")
 
-    delete = subcommands.add_parser("delete-profile", help="Delete GIC swanctl files for a UUID.")
+    delete = subcommands.add_parser("delete-profile", help="Delete SEE swanctl files for a UUID.")
     delete.add_argument("--profile-uuid", required=True)
     delete.add_argument("--config-root", default="")
 

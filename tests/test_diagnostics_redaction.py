@@ -12,6 +12,7 @@ from gic_ipsec_client.backend.diagnostics import (
     dns_query_used_unexpected_link,
     dummy_dns_link_ignored,
     internal_dns_test_names,
+    profile_dns_test_names,
     redact_mapping,
     redact_text,
     route_only_domains_configured_on_lo,
@@ -105,35 +106,54 @@ def test_diagnostics_detects_split_full_tunnel_mismatch() -> None:
     assert DNS_SERVER_MISSING_HINT in hints
 
 
-def test_diagnostics_uses_internal_split_dns_hostnames() -> None:
-    assert internal_dns_test_names(["see-radars.com", "seetech.local"]) == [
-        "nextcloud.see-radars.com",
-        "srv-dc-01.seetech.local",
+def test_diagnostics_dns_test_names_are_profile_driven() -> None:
+    profile = VpnProfile(
+        id="00000000-0000-4000-8000-000000000001",
+        profile_name="Split VPN",
+        gateway_fqdn_or_ip="vpn.example.com",
+        username="alice",
+        eap_identity="alice",
+        psk="psk",
+        password="password",
+        remote_routes=["10.88.0.0/24"],
+        dns_search_domains=["corp.example", "corp.local"],
+        dns_test_names=["portal.corp.example", "dc.corp.local"],
+    )
+
+    assert profile_dns_test_names(profile) == [
+        "portal.corp.example",
+        "dc.corp.local",
+        "corp.example",
+        "corp.local",
+    ]
+    assert internal_dns_test_names(["corp.example", "corp.local"]) == [
+        "corp.example",
+        "corp.local",
     ]
 
 
 def test_diagnostics_detects_route_only_domains_on_lo() -> None:
     status = """
     Link 1 (lo)
-        DNS Servers: 192.168.88.203
-        DNS Domain: ~see-radars.com ~seetech.local
-    Link 2 (ens18)
+        DNS Servers: 10.88.0.53
+        DNS Domain: ~corp.example ~corp.local
+    Link 2 (wan0)
         DNS Servers: 1.1.1.1
     """
 
     assert route_only_domains_configured_on_lo(
         status,
-        ["see-radars.com", "seetech.local"],
+        ["corp.example", "corp.local"],
     )
 
 
 def test_diagnostics_warns_when_internal_query_uses_physical_link() -> None:
     query_output = """
-    nextcloud.see-radars.com: 192.168.88.65
+    portal.corp.example: 10.88.0.65
     -- Information acquired via protocol DNS in 3.1ms.
     -- Data is authenticated: no; Data was acquired via local or encrypted transport: no
     -- Data from: network
-    Link 2 (ens18)
+    Link 2 (wan0)
     """
 
     assert dns_query_used_unexpected_link(query_output)
@@ -151,24 +171,24 @@ def test_diagnostics_warns_when_dummy_dns_is_ignored_by_resolved() -> None:
         eap_identity="alice",
         psk="psk",
         password="password",
-        remote_routes=["192.168.88.0/24"],
-        dns_servers=["192.168.88.203"],
-        dns_search_domains=["see-radars.com"],
+        remote_routes=["10.88.0.0/24"],
+        dns_servers=["10.88.0.53"],
+        dns_search_domains=["corp.example"],
     )
     dummy_status = """
     Link 99 (seeipsec0)
-        DNS Servers: 192.168.88.203
-        DNS Domain: ~see-radars.com
+        DNS Servers: 10.88.0.53
+        DNS Domain: ~corp.example
     """
     query_output = """
-    nextcloud.see-radars.com: 185.70.111.155
-    -- link: ens18
+    portal.corp.example: 203.0.113.155
+    -- link: wan0
     """
 
     assert dummy_dns_link_ignored(dummy_status, query_output, profile.dns_servers)
     hints = diagnostic_hints(
         profile=profile,
-        resolved_status="DNS Servers: 192.168.88.203",
+        resolved_status="DNS Servers: 10.88.0.53",
         internal_query_output=query_output,
         dummy_resolved_status=dummy_status,
     )
@@ -178,13 +198,13 @@ def test_diagnostics_warns_when_dummy_dns_is_ignored_by_resolved() -> None:
 
 def test_diagnostics_allows_physical_link_when_dns_apply_verified_it() -> None:
     query_output = """
-    nextcloud.see-radars.com: 192.168.88.65
-    -- link: ens18
+    portal.corp.example: 10.88.0.65
+    -- link: wan0
     """
 
     hints = diagnostic_hints(
         internal_query_output=query_output,
-        dns_apply_report={"success": True, "verified_interface": "ens18"},
+        dns_apply_report={"success": True, "verified_interface": "wan0"},
     )
 
     assert DNS_QUERY_WRONG_LINK_HINT not in hints
@@ -199,11 +219,11 @@ def test_diagnostics_warns_when_disconnected_vpn_dns_remains() -> None:
         eap_identity="alice",
         psk="psk",
         password="password",
-        remote_routes=["192.168.88.0/24"],
-        dns_servers=["192.168.88.203"],
-        dns_search_domains=["see-radars.com"],
+        remote_routes=["10.88.0.0/24"],
+        dns_servers=["10.88.0.53"],
+        dns_search_domains=["corp.example"],
     )
-    status = "Link 2 (ens18)\nDNS Servers: 192.168.88.203\n"
+    status = "Link 2 (wan0)\nDNS Servers: 10.88.0.53\n"
 
     assert vpn_dns_rollback_failed(
         profile=profile,

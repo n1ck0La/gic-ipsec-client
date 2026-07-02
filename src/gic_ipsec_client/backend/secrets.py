@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-SERVICE_NAME = "gic-ipsec-client"
+SERVICE_NAME = "see-ipsec-client"
 
 
 class SecretStorageUnavailable(RuntimeError):

@@ -7,7 +7,6 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -15,6 +14,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QSpinBox,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -26,7 +26,6 @@ from gic_ipsec_client.backend.models import (
     fortigate_default_profile,
 )
 from gic_ipsec_client.backend.renderer import render_profile_config, render_secret_config
-from gic_ipsec_client.backend.resolved import FORTIGATE_ROUTE_PRESETS
 from gic_ipsec_client.backend.validators import ProfileValidationError, validate_profile
 
 
@@ -66,8 +65,6 @@ class ProfileEditor(QDialog):
         self.tunnel_mode.currentIndexChanged.connect(self._update_tunnel_note)
         self.remote_routes = QPlainTextEdit()
         self.remote_routes.setFixedHeight(70)
-        self.route_preset = QPushButton("Add FortiGate routes")
-        self.route_preset.clicked.connect(self._add_fortigate_routes)
         self.full_tunnel_note = QLabel(
             "Full tunnel requires FortiGate policy from IPsec interface to WAN "
             "with NAT enabled. Create IPsec-to-WAN firewall policy with NAT enabled."
@@ -77,6 +74,12 @@ class ProfileEditor(QDialog):
         self.dns_servers.setFixedHeight(55)
         self.dns_search_domains = QPlainTextEdit()
         self.dns_search_domains.setFixedHeight(55)
+        self.dns_test_names = QPlainTextEdit()
+        self.dns_test_names.setFixedHeight(55)
+        self.dns_strategy = QComboBox()
+        self.dns_strategy.addItems(
+            ["auto", "resolved-default-interface", "resolved-lo", "networkmanager", "disabled"]
+        )
         self.ike_proposals = QPlainTextEdit()
         self.ike_proposals.setFixedHeight(85)
         self.esp_proposals = QPlainTextEdit()
@@ -85,8 +88,10 @@ class ProfileEditor(QDialog):
         self.notes = QPlainTextEdit()
         self.notes.setFixedHeight(70)
         self.secret_storage = QComboBox()
-        self.secret_storage.addItem("Ask every time", "ask")
-        self.secret_storage.addItem("Save secrets locally", "keyring")
+        self.secret_storage.addItem("Linux Secret Service/keyring", "keyring")
+        self.config_root = QComboBox()
+        self.config_root.addItems(["auto", "/etc/swanctl", "/etc/strongswan/swanctl"])
+        self.dns_interface = QLineEdit()
 
         self._build_layout()
         self._load_profile(profile or fortigate_default_profile())
@@ -103,42 +108,59 @@ class ProfileEditor(QDialog):
         preset_row.addStretch(1)
         layout.addLayout(preset_row)
 
-        form = QFormLayout()
-        form.addRow("Profile name", self.profile_name)
-        form.addRow("Gateway", self.gateway)
+        tabs = QTabWidget()
+        general = QWidget()
+        general_form = QFormLayout(general)
+        general_form.addRow("Profile name", self.profile_name)
+        general_form.addRow("Gateway", self.gateway)
         warning = QLabel(
             "FortiGate PSK+EAP commonly requires remote IKE ID = %any because "
             "the peer may authenticate as its resolved IP instead of the gateway FQDN."
         )
         warning.setWordWrap(True)
-        form.addRow(warning)
-        form.addRow("Username", self.username)
-        form.addRow("EAP identity", self.eap_identity)
-        form.addRow("PSK", self.psk)
-        form.addRow("Password", self.password)
-        form.addRow("Secret storage", self.secret_storage)
-        layout.addLayout(form)
+        general_form.addRow(warning)
+        general_form.addRow("Transport", self.transport)
+        general_form.addRow("IKE port", self.ike_port)
 
-        advanced = QGroupBox("Advanced")
-        advanced.setCheckable(True)
-        advanced.setChecked(False)
+        auth = QWidget()
+        auth_form = QFormLayout(auth)
+        auth_form.addRow("Username", self.username)
+        auth_form.addRow("EAP identity", self.eap_identity)
+        auth_form.addRow("PSK", self.psk)
+        auth_form.addRow("Password", self.password)
+        auth_form.addRow("Secret storage", self.secret_storage)
+
+        routes = QWidget()
+        routes_form = QFormLayout(routes)
+        routes_form.addRow("Request virtual IP", self.request_virtual_ip)
+        routes_form.addRow("Tunnel mode", self.tunnel_mode)
+        routes_form.addRow(self.full_tunnel_note)
+        routes_form.addRow(QLabel("Remote routes"), self.remote_routes)
+
+        dns = QWidget()
+        dns_form = QFormLayout(dns)
+        dns_form.addRow(QLabel("DNS servers"), self.dns_servers)
+        dns_form.addRow(QLabel("DNS domains"), self.dns_search_domains)
+        dns_form.addRow(QLabel("DNS test names"), self.dns_test_names)
+        dns_form.addRow("Linux DNS strategy", self.dns_strategy)
+
+        advanced = QWidget()
         advanced_layout = QFormLayout(advanced)
         advanced_layout.addRow("Local ID", self.local_id)
         advanced_layout.addRow("Strict remote ID", self.remote_id)
-        advanced_layout.addRow("Transport", self.transport)
-        advanced_layout.addRow("IKE port", self.ike_port)
-        advanced_layout.addRow("Request virtual IP", self.request_virtual_ip)
-        advanced_layout.addRow("Tunnel mode", self.tunnel_mode)
-        advanced_layout.addRow(self.full_tunnel_note)
-        advanced_layout.addRow(self.route_preset)
-        advanced_layout.addRow(QLabel("Remote routes"), self.remote_routes)
-        advanced_layout.addRow(QLabel("DNS servers"), self.dns_servers)
-        advanced_layout.addRow(QLabel("DNS search domains"), self.dns_search_domains)
         advanced_layout.addRow(QLabel("IKE proposals"), self.ike_proposals)
         advanced_layout.addRow(QLabel("ESP proposals"), self.esp_proposals)
         advanced_layout.addRow("DPD enabled", self.dpd_enabled)
+        advanced_layout.addRow("swanctl config root", self.config_root)
+        advanced_layout.addRow("DNS interface", self.dns_interface)
         advanced_layout.addRow(QLabel("Notes"), self.notes)
-        layout.addWidget(advanced)
+
+        tabs.addTab(general, "General")
+        tabs.addTab(auth, "Authentication")
+        tabs.addTab(routes, "Routes")
+        tabs.addTab(dns, "DNS")
+        tabs.addTab(advanced, "Advanced")
+        layout.addWidget(tabs)
         self._update_tunnel_note()
 
         buttons = QDialogButtonBox(
@@ -168,6 +190,8 @@ class ProfileEditor(QDialog):
         self.remote_routes.setPlainText(_join_lines(profile.remote_routes))
         self.dns_servers.setPlainText(_join_lines(profile.dns_servers))
         self.dns_search_domains.setPlainText(_join_lines(profile.dns_search_domains))
+        self.dns_test_names.setPlainText(_join_lines(profile.dns_test_names))
+        self.dns_strategy.setCurrentText(profile.dns.linux_strategy)
         self.ike_proposals.setPlainText(
             _join_lines(profile.ike_proposals or list(DEFAULT_IKE_PROPOSALS))
         )
@@ -177,6 +201,8 @@ class ProfileEditor(QDialog):
         self.dpd_enabled.setChecked(profile.dpd_enabled)
         self.notes.setPlainText(profile.notes)
         self.secret_storage.setCurrentIndex(self.secret_storage.findData(profile.secret_storage))
+        self.config_root.setCurrentText(profile.platform.config_root)
+        self.dns_interface.setText(profile.platform.dns_interface)
 
     def profile(self) -> VpnProfile:
         return VpnProfile(
@@ -184,6 +210,7 @@ class ProfileEditor(QDialog):
             profile_name=self.profile_name.text().strip(),
             gateway_fqdn_or_ip=self.gateway.text().strip(),
             remote_id=self.remote_id.text().strip(),
+            remote_id_mode="custom" if self.remote_id.text().strip() else "any",
             local_id=self.local_id.text().strip(),
             username=self.username.text().strip(),
             eap_identity=self.eap_identity.text().strip(),
@@ -196,11 +223,15 @@ class ProfileEditor(QDialog):
             remote_routes=_split_lines(self.remote_routes.toPlainText()),
             dns_servers=_split_lines(self.dns_servers.toPlainText()),
             dns_search_domains=_split_lines(self.dns_search_domains.toPlainText()),
+            dns_test_names=_split_lines(self.dns_test_names.toPlainText()),
+            dns_linux_strategy=self.dns_strategy.currentText(),  # type: ignore[arg-type]
             ike_proposals=_split_lines(self.ike_proposals.toPlainText()),
             esp_proposals=_split_lines(self.esp_proposals.toPlainText()),
             dpd_enabled=self.dpd_enabled.isChecked(),
             notes=self.notes.toPlainText().strip(),
             secret_storage=self.secret_storage.currentData(),
+            platform_config_root=self.config_root.currentText(),  # type: ignore[arg-type]
+            dns_interface=self.dns_interface.text().strip() or "auto",
         )
 
     def _accept_if_valid(self) -> None:
@@ -229,11 +260,6 @@ class ProfileEditor(QDialog):
         box.setIcon(QMessageBox.Icon.Information)
         box.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         box.exec()
-
-    def _add_fortigate_routes(self) -> None:
-        existing = _split_lines(self.remote_routes.toPlainText())
-        merged = list(dict.fromkeys([*existing, *FORTIGATE_ROUTE_PRESETS]))
-        self.remote_routes.setPlainText(_join_lines(merged))
 
     def _update_tunnel_note(self) -> None:
         full_tunnel = self.tunnel_mode.currentData() is False

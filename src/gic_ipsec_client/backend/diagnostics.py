@@ -61,19 +61,13 @@ STRONGSWAN_DNS_HOOK_NONFATAL_HINT = (
     "strongSwan resolvconf DNS hook failed, but app-managed resolvectl DNS succeeded."
 )
 
-INTERNAL_DNS_TEST_HOSTS = {
-    "see-radars.com": "nextcloud.see-radars.com",
-    "seetech.local": "srv-dc-01.seetech.local",
-}
-
-
 @dataclass(slots=True)
 class DiagnosticReport:
     summary: dict[str, Any]
     sections: dict[str, str] = field(default_factory=dict)
 
     def as_text(self) -> str:
-        parts = ["GIC diagnostics", json.dumps(self.summary, indent=2, sort_keys=True)]
+        parts = ["SEE IPsec diagnostics", json.dumps(self.summary, indent=2, sort_keys=True)]
         for name, content in self.sections.items():
             parts.extend([f"\n## {name}", content.strip()])
         return "\n".join(parts).strip() + "\n"
@@ -174,7 +168,17 @@ def internal_dns_test_names(search_domains: list[str]) -> list[str]:
         clean = domain.strip().lstrip("~")
         if not clean:
             continue
-        names.append(INTERNAL_DNS_TEST_HOSTS.get(clean, clean))
+        names.append(clean)
+    return list(dict.fromkeys(names))
+
+
+def profile_dns_test_names(profile: VpnProfile | None) -> list[str]:
+    if profile is None:
+        return []
+    names = [
+        *profile.dns_test_names,
+        *internal_dns_test_names(profile.dns_search_domains),
+    ]
     return list(dict.fromkeys(names))
 
 
@@ -220,7 +224,9 @@ def dummy_dns_link_ignored(
         return False
     if dns_servers and not all(server in dummy_status for server in dns_servers):
         return False
-    return "ens18" in dns_query_links(query_output)
+    resolved_links = dns_query_links(query_output)
+    expected_links = {LOOPBACK_DNS_INTERFACE, DUMMY_DNS_INTERFACE}
+    return any(link not in expected_links for link in resolved_links)
 
 
 def vpn_dns_rollback_failed(
@@ -399,7 +405,7 @@ def collect_diagnostics(
         swanctl_diagnostics.get("resolvectl_status_default_interface_output", "")
     )
     xfrm_state_raw = _run_optional(ip_xfrm_state().args, timeout_seconds=10)
-    query_names = internal_dns_test_names(profile.dns_search_domains) if profile else []
+    query_names = profile_dns_test_names(profile)
     internal_dns_query_output = _run_internal_dns_queries(
         query_names,
         profile.dns_servers if profile else [],
@@ -504,7 +510,7 @@ def export_debug_bundle(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     fd, archive_name = tempfile.mkstemp(
-        prefix="gic-debug-",
+        prefix="see-ipsec-debug-",
         suffix=".tar.gz",
         dir=output_dir,
     )
@@ -524,7 +530,7 @@ def export_debug_bundle(
     )
     rendered = render_sanitized_bundle_config(profile, privacy_mode=privacy_mode) if profile else ""
 
-    with tempfile.TemporaryDirectory(prefix="gic-debug-src-") as tmp_name:
+    with tempfile.TemporaryDirectory(prefix="see-ipsec-debug-src-") as tmp_name:
         tmp = Path(tmp_name)
         files = {
             "app-version.txt": f"{__version__}\n",

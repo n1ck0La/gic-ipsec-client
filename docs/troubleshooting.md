@@ -3,9 +3,9 @@
 ## Client-Side Commands
 
 ```bash
-pkexec gic-ipsec-helper list-sas
-pkexec gic-ipsec-helper list-conns
-pkexec gic-ipsec-helper diagnostics --profile-uuid <uuid>
+pkexec see-ipsec-helper list-sas
+pkexec see-ipsec-helper list-conns
+pkexec see-ipsec-helper diagnostics --profile-uuid <uuid>
 journalctl -u strongswan* -u charon-systemd --since "10 minutes ago"
 ip route
 resolvectl status
@@ -24,15 +24,15 @@ nmcli device show
   active.
 - Confirm the `vici`, `eap-identity`, `eap-mschapv2`, `kernel-netlink`, and DNS
   integration plugins are installed.
-- Run GIC diagnostics and export a sanitized bundle when asking for help.
-- Verify the generated `conf.d/gic-<uuid>.conf` exists under the selected
+- Run SEE diagnostics and export a sanitized bundle when asking for help.
+- Verify the generated `conf.d/see-ipsec-<uuid>.conf` exists under the selected
   `swanctl` config root. On Fedora this is normally
   `/etc/strongswan/swanctl`; on Ubuntu/Debian it is normally `/etc/swanctl`.
-- On Fedora with systemd-resolved stub DNS and split tunnel, GIC first applies
+- On Fedora with systemd-resolved stub DNS and split tunnel, SEE first applies
   route-only VPN DNS domains to `lo` with `resolvectl`. If verification shows
-  queries still using the physical link, GIC snapshots the default interface,
+  queries still using the physical link, SEE snapshots the default interface,
   applies the route-only VPN DNS domains there, flushes caches, and resets
-  resolver server features. On disconnect, GIC restores the saved DNS servers,
+  resolver server features. On disconnect, SEE restores the saved DNS servers,
   domains, and default-route state before terminating the IKE_SA. If explicit
   restore fails, it runs `nmcli dev reapply <interface>`. The old `seeipsec0`
   dummy link is retained only for cleanup and diagnostics of earlier runs.

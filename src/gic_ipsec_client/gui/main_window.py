@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from uuid import uuid4
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -38,19 +39,19 @@ from gic_ipsec_client.gui.status_panel import StatusPanel
 
 
 def _config_dir() -> Path:
-    return Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "gic-ipsec-client"
+    return Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "see-ipsec-client"
 
 
 def _request_dir() -> Path:
     return Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / (
-        "gic-ipsec-client/helper-requests"
+        "see-ipsec-client/helper-requests"
     )
 
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("GIC IPsec Client")
+        self.setWindowTitle("SEE IPsec Client")
         self.resize(980, 620)
         self.backend = StrongSwanBackend()
         self.settings = load_app_settings()
@@ -71,17 +72,26 @@ class MainWindow(QMainWindow):
         toolbar.setMovable(False)
         self.addToolBar(toolbar)
 
-        add_button = QPushButton("Add")
+        add_button = QPushButton("Add Profile")
         add_button.clicked.connect(self.add_profile)
         edit_button = QPushButton("Edit")
         edit_button.clicked.connect(self.edit_profile)
+        clone_button = QPushButton("Clone")
+        clone_button.clicked.connect(self.clone_profile)
         delete_button = QPushButton("Delete")
         delete_button.clicked.connect(self.delete_profile)
+        import_button = QPushButton("Import Profile")
+        import_button.clicked.connect(self.import_profile)
+        export_profile_button = QPushButton("Export")
+        export_profile_button.clicked.connect(self.export_profile)
         settings_button = QPushButton("Settings")
         settings_button.clicked.connect(self.edit_settings)
         toolbar.addWidget(add_button)
         toolbar.addWidget(edit_button)
+        toolbar.addWidget(clone_button)
         toolbar.addWidget(delete_button)
+        toolbar.addWidget(import_button)
+        toolbar.addWidget(export_profile_button)
         toolbar.addWidget(settings_button)
 
         connect_button = QPushButton("Connect")
@@ -93,7 +103,9 @@ class MainWindow(QMainWindow):
         self.reconnect_button.setVisible(False)
         run_diag_button = QPushButton("Run diagnostics")
         run_diag_button.clicked.connect(self.run_diagnostics)
-        export_button = QPushButton("Export sanitized debug bundle")
+        test_dns_button = QPushButton("Test DNS")
+        test_dns_button.clicked.connect(self.test_dns)
+        export_button = QPushButton("Export diagnostics")
         export_button.clicked.connect(self.export_debug_bundle)
         copy_button = QPushButton("Copy diagnostics summary")
         copy_button.clicked.connect(self.copy_diagnostics_summary)
@@ -104,6 +116,7 @@ class MainWindow(QMainWindow):
             disconnect_button,
             self.reconnect_button,
             run_diag_button,
+            test_dns_button,
             export_button,
             copy_button,
         )
@@ -161,6 +174,9 @@ class MainWindow(QMainWindow):
 
     def _refresh_profile_list(self) -> None:
         self.profile_list.clear()
+        if not self.profiles:
+            self.log_viewer.append_log("No VPN profiles configured.")
+            return
         for profile in sorted(self.profiles.values(), key=lambda item: item.profile_name.lower()):
             item = QListWidgetItem(profile.profile_name)
             item.setData(Qt.ItemDataRole.UserRole, profile.id)
@@ -190,15 +206,29 @@ class MainWindow(QMainWindow):
         self._persist_profile(editor.profile())
 
     def _persist_profile(self, profile: VpnProfile) -> None:
-        if profile.secret_storage == "keyring":
+        if profile.psk or profile.password:
             try:
                 secrets.save_profile_secrets(profile.id, psk=profile.psk, password=profile.password)
-                profile.psk = ""
-                profile.password = ""
             except secrets.SecretStorageUnavailable as exc:
                 QMessageBox.warning(self, "Secret storage unavailable", str(exc))
-                profile.secret_storage = "ask"
+            finally:
+                profile.psk = ""
+                profile.password = ""
+        profile.secret_storage = "keyring"
         self.profiles[profile.id] = profile
+        self._save_profiles()
+        self._refresh_profile_list()
+
+    def clone_profile(self) -> None:
+        profile = self._selected_profile()
+        if not profile:
+            QMessageBox.information(self, "No profile selected", "Select a profile first.")
+            return
+        payload = profile.to_dict(include_secrets=False)
+        payload["id"] = str(uuid4())
+        payload["name"] = f"{profile.name} Copy"
+        clone = VpnProfile.from_dict(payload)
+        self.profiles[clone.id] = clone
         self._save_profiles()
         self._refresh_profile_list()
 
@@ -218,6 +248,39 @@ class MainWindow(QMainWindow):
         self._save_profiles()
         self._refresh_profile_list()
         self.log_viewer.append_log(f"Deleted profile {profile.profile_name}.")
+
+    def import_profile(self) -> None:
+        file_name, _ = QFileDialog.getOpenFileName(self, "Import profile", "", "JSON (*.json)")
+        if not file_name:
+            return
+        try:
+            payload = json.loads(Path(file_name).read_text(encoding="utf-8"))
+            profile = VpnProfile.from_dict(payload)
+            validate_profile(profile, require_secrets=False)
+        except (OSError, json.JSONDecodeError, TypeError, ProfileValidationError) as exc:
+            QMessageBox.warning(self, "Import failed", str(exc))
+            return
+        self.profiles[profile.id] = profile
+        self._save_profiles()
+        self._refresh_profile_list()
+
+    def export_profile(self) -> None:
+        profile = self._selected_profile()
+        if not profile:
+            QMessageBox.information(self, "No profile selected", "Select a profile first.")
+            return
+        file_name, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export profile",
+            f"{profile.name or profile.id}.json",
+            "JSON (*.json)",
+        )
+        if not file_name:
+            return
+        Path(file_name).write_text(
+            json.dumps(profile.to_dict(include_secrets=False), indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
 
     def _profile_with_secrets(self, profile: VpnProfile) -> VpnProfile:
         if profile.psk and profile.password:
@@ -304,6 +367,9 @@ class MainWindow(QMainWindow):
         )
         self.last_diagnostics = report.as_text()
         self.log_viewer.set_log_text(self.last_diagnostics)
+
+    def test_dns(self) -> None:
+        self.run_diagnostics()
 
     def export_debug_bundle(self) -> None:
         directory = QFileDialog.getExistingDirectory(self, "Export debug bundle")

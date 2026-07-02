@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=SEE IPsec Client
+Comment=Manage strongSwan IKEv2 VPN profiles
+Exec=/usr/bin/see-ipsec-client
+Icon=see-ipsec-client
+Terminal=false
+Categories=Network;Security;

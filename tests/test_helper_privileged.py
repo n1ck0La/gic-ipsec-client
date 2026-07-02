@@ -33,7 +33,7 @@ def test_initiate_is_blocked_when_child_is_not_loaded(monkeypatch: pytest.Monkey
     ):
         privileged.connect_profile(profile_id)
 
-    assert ("swanctl", "--initiate", "--child", f"gic-{profile_id}-child") not in calls
+    assert ("swanctl", "--initiate", "--child", f"see-ipsec-{profile_id}-child") not in calls
 
 
 def test_disconnect_restores_dns_before_terminating_sa(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -53,7 +53,7 @@ def test_disconnect_restores_dns_before_terminating_sa(monkeypatch: pytest.Monke
         return []
 
     def fake_run(spec: commands.CommandSpec) -> Completed:
-        if spec.args == ("swanctl", "--terminate", "--ike", f"gic-{profile_id}"):
+        if spec.args == ("swanctl", "--terminate", "--ike", f"see-ipsec-{profile_id}"):
             calls.append("terminate-sa")
             return Completed(0)
         if spec.args == ("swanctl", "--list-sas"):
@@ -78,7 +78,7 @@ def test_disconnect_succeeds_with_cleanup_warnings_when_final_state_is_good(
     profile_id = "00000000-0000-4000-8000-000000000001"
 
     def fake_run(spec: commands.CommandSpec) -> Completed:
-        if spec.args == ("swanctl", "--terminate", "--ike", f"gic-{profile_id}"):
+        if spec.args == ("swanctl", "--terminate", "--ike", f"see-ipsec-{profile_id}"):
             return Completed(1, stderr="terminate already gone")
         if spec.args == ("swanctl", "--list-sas"):
             return Completed(0, "")
@@ -110,10 +110,10 @@ def test_disconnect_fails_when_selected_sa_remains_active(
     profile_id = "00000000-0000-4000-8000-000000000001"
 
     def fake_run(spec: commands.CommandSpec) -> Completed:
-        if spec.args == ("swanctl", "--terminate", "--ike", f"gic-{profile_id}"):
+        if spec.args == ("swanctl", "--terminate", "--ike", f"see-ipsec-{profile_id}"):
             return Completed(0)
         if spec.args == ("swanctl", "--list-sas"):
-            return Completed(0, f"gic-{profile_id}: ESTABLISHED")
+            return Completed(0, f"see-ipsec-{profile_id}: ESTABLISHED")
         raise AssertionError(f"unexpected command: {spec.args}")
 
     monkeypatch.setattr(privileged, "revert_resolved_dns", lambda *args, **kwargs: [])
@@ -136,7 +136,7 @@ def test_disconnect_fails_when_final_dns_verification_fails(
     profile_id = "00000000-0000-4000-8000-000000000001"
 
     def fake_run(spec: commands.CommandSpec) -> Completed:
-        if spec.args == ("swanctl", "--terminate", "--ike", f"gic-{profile_id}"):
+        if spec.args == ("swanctl", "--terminate", "--ike", f"see-ipsec-{profile_id}"):
             return Completed(0)
         if spec.args == ("swanctl", "--list-sas"):
             return Completed(0, "")
