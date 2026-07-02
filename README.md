@@ -46,7 +46,26 @@ python -m gic_ipsec_client.helper.cli --help
 
 ## Packaging
 
-Install nfpm, then run:
+Install nfpm.
+Ubuntu:
+```bash
+echo 'deb [trusted=yes] https://repo.goreleaser.com/apt/ /' | sudo tee /etc/apt/sources.list.d/goreleaser.list
+sudo apt update
+sudo apt install nfpm
+```
+Fedora:
+```bash
+sudo tee /etc/yum.repos.d/goreleaser.repo <<'EOF'
+[goreleaser]
+name=GoReleaser
+baseurl=https://repo.goreleaser.com/yum/
+enabled=1
+gpgcheck=0
+EOF
+sudo dnf install nfpm
+```
+
+Then run:
 
 ```bash
 bash ./packaging/build-packages.sh
