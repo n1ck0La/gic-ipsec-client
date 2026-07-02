@@ -17,7 +17,12 @@ def _is_swanctl_command(args: tuple[str, ...] | list[str], *tail: str) -> bool:
     return Path(args[0]).name == "swanctl" and tuple(args[1:]) == tail
 
 
-def test_commands_are_argument_arrays_without_shell() -> None:
+def test_commands_are_argument_arrays_without_shell(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        commands,
+        "resolve_helper_path",
+        lambda: "/usr/libexec/gic-ipsec-client/gic-ipsec-helper",
+    )
     specs = [
         commands.swanctl_load_all(),
         commands.swanctl_initiate("gic-child"),
@@ -71,6 +76,85 @@ def test_swanctl_resolution_prefers_path_then_fedora_fallback(
     assert commands.resolve_swanctl_path() == str(fallback)
 
 
+def test_installed_fedora_layout_resolves_libexec_helper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installed_helper = Path("/usr/libexec/gic-ipsec-client/gic-ipsec-helper")
+    monkeypatch.delenv(commands.HELPER_ENV_VAR, raising=False)
+    monkeypatch.setattr(commands, "development_helper_path_allowed", lambda: False)
+    monkeypatch.setattr(
+        commands,
+        "_is_executable_file",
+        lambda path: path == installed_helper,
+    )
+
+    assert commands.resolve_helper_path() == str(installed_helper)
+
+
+def test_development_venv_resolves_helper_from_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dev_helper = Path("/home/nick/project/.venv/bin/gic-ipsec-helper")
+    monkeypatch.delenv(commands.HELPER_ENV_VAR, raising=False)
+    monkeypatch.setattr(commands, "HELPER_FALLBACK_PATHS", ())
+    monkeypatch.setattr(commands, "development_helper_path_allowed", lambda: True)
+    monkeypatch.setattr(
+        commands,
+        "command_v",
+        lambda name: str(dev_helper) if name == "gic-ipsec-helper" else "",
+    )
+    monkeypatch.setattr(commands, "_is_executable_file", lambda path: path == dev_helper)
+
+    assert commands.resolve_helper_path() == str(dev_helper)
+
+
+def test_pkexec_command_uses_absolute_helper_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    helper_path = "/usr/libexec/gic-ipsec-client/gic-ipsec-helper"
+    monkeypatch.setattr(commands, "resolve_helper_path", lambda: helper_path)
+
+    spec = commands.build_pkexec_helper_command("connect-profile", "--profile-uuid", "uuid")
+
+    assert spec.args == ("pkexec", helper_path, "connect-profile", "--profile-uuid", "uuid")
+    assert Path(spec.args[1]).is_absolute()
+
+
+def test_missing_helper_error_is_user_facing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(commands, "resolve_helper_path", lambda: None)
+
+    with pytest.raises(FileNotFoundError, match=commands.HELPER_NOT_FOUND_MESSAGE):
+        commands.build_pkexec_helper_command("load-profile")
+
+
+def test_helper_installation_diagnostics_reports_polkit_match(tmp_path: Path) -> None:
+    helper = tmp_path / "usr" / "libexec" / "gic-ipsec-client" / "gic-ipsec-helper"
+    helper.parent.mkdir(parents=True)
+    helper.write_text("#!/bin/sh\n", encoding="utf-8")
+    helper.chmod(0o755)
+    policy = tmp_path / "com.gicipsec.client.policy"
+    policy.write_text(
+        f"""<?xml version="1.0" encoding="UTF-8"?>
+<policyconfig>
+  <action id="com.gicipsec.client.helper">
+    <annotate key="{commands.POLKIT_EXEC_PATH_KEY}">{helper}</annotate>
+  </action>
+</policyconfig>
+""",
+        encoding="utf-8",
+    )
+
+    payload = commands.helper_installation_diagnostics(
+        helper_path=str(helper),
+        policy_path=policy,
+    )
+
+    assert payload["resolved_helper_path"] == str(helper)
+    assert payload["helper_exists"] is True
+    assert payload["helper_executable"] is True
+    assert payload["polkit_policy_file_path"] == str(policy)
+    assert payload["polkit_exec_path"] == str(helper)
+    assert payload["helper_matches_polkit_exec_path"] is True
+
+
 def test_profile_deletion_only_deletes_owned_uuid_files(tmp_path: Path) -> None:
     profile_id = str(uuid4())
     layout = SwanctlLayout(root=tmp_path, source="test", use_secrets_dir=True)
@@ -122,6 +206,11 @@ def test_backend_vici_commands_use_privileged_helper(monkeypatch: pytest.MonkeyP
         remote_routes=["192.168.20.0/24"],
     )
     monkeypatch.setattr(commands, "run_command", fake_run)
+    monkeypatch.setattr(
+        commands,
+        "resolve_helper_path",
+        lambda: "/usr/libexec/gic-ipsec-client/gic-ipsec-helper",
+    )
 
     backend = StrongSwanBackend()
     backend.load_profile()
@@ -133,6 +222,7 @@ def test_backend_vici_commands_use_privileged_helper(monkeypatch: pytest.MonkeyP
     assert calls
     assert all(call[0] == "pkexec" for call in calls)
     assert not any(call[0] == "swanctl" for call in calls)
+    assert all(call[1] == "/usr/libexec/gic-ipsec-client/gic-ipsec-helper" for call in calls)
 
 
 def test_gui_entrypoint_version_is_headless(capsys: pytest.CaptureFixture[str]) -> None:

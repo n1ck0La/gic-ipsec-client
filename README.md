@@ -41,7 +41,7 @@ python -m gic_ipsec_client
 Run the helper:
 
 ```bash
-gic-ipsec-helper --help
+python -m gic_ipsec_client.helper.cli --help
 ```
 
 ## Packaging

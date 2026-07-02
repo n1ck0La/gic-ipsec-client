@@ -412,9 +412,13 @@ class MainWindow(QMainWindow):
         return request_path
 
     def _run_helper(self, subcommand: str, *args: str) -> int:
-        command = commands.build_pkexec_helper_command(subcommand, *args)
         try:
+            command = commands.build_pkexec_helper_command(subcommand, *args)
             completed = commands.run_command(command)
+        except FileNotFoundError as exc:
+            self.last_helper_output = str(exc)
+            self.log_viewer.append_log(self.last_helper_output)
+            return 1
         except (OSError, TimeoutError) as exc:
             self.last_helper_output = f"Helper failed: {exc}"
             self.log_viewer.append_log(self.last_helper_output)

@@ -3,9 +3,9 @@
 ## Client-Side Commands
 
 ```bash
-pkexec gic-ipsec-helper list-sas
-pkexec gic-ipsec-helper list-conns
-pkexec gic-ipsec-helper diagnostics --profile-uuid <uuid>
+pkexec /usr/libexec/gic-ipsec-client/gic-ipsec-helper list-sas
+pkexec /usr/libexec/gic-ipsec-client/gic-ipsec-helper list-conns
+pkexec /usr/libexec/gic-ipsec-client/gic-ipsec-helper diagnostics --profile-uuid <uuid>
 journalctl -u strongswan* -u charon-systemd --since "10 minutes ago"
 ip route
 resolvectl status

@@ -357,6 +357,7 @@ def check_dependencies() -> dict[str, Any]:
         "swanctl available": bool(resolved_swanctl_path),
         "command_v_swanctl": commands.command_v("swanctl"),
         "resolved_swanctl_path": resolved_swanctl_path,
+        "helper": commands.helper_installation_diagnostics(),
         "pkexec available": bool(shutil.which("pkexec")),
         "services": _service_summary() if shutil.which("systemctl") else {"systemctl": "not found"},
         "required plugins likely needed": [

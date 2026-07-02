@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
+import xml.etree.ElementTree as ET
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +19,17 @@ from gic_ipsec_client.backend.swanctl_paths import (
 from gic_ipsec_client.backend.validators import ProfileValidationError, validate_uuid
 
 SWANCTL_FALLBACK_PATHS = (Path("/usr/bin/swanctl"), Path("/usr/sbin/swanctl"))
+HELPER_NOT_FOUND_MESSAGE = (
+    "Privileged helper was not found. The package installation is incomplete."
+)
+HELPER_ENV_VAR = "GIC_IPSEC_HELPER"
+HELPER_FALLBACK_PATHS = (
+    Path("/usr/libexec/gic-ipsec-client/gic-ipsec-helper"),
+    Path("/usr/lib/gic-ipsec-client/gic-ipsec-helper"),
+    Path("/opt/gic-ipsec-client/venv/bin/gic-ipsec-helper"),
+)
+POLKIT_POLICY_PATH = Path("/usr/share/polkit-1/actions/com.gicipsec.client.policy")
+POLKIT_EXEC_PATH_KEY = "org.freedesktop.policykit.exec.path"
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,12 +67,23 @@ def command_v(name: str) -> str:
     return shutil.which(name) or ""
 
 
+def _absolute_executable_path(path: str | Path) -> str | None:
+    candidate = Path(path).expanduser()
+    if _is_executable_file(candidate):
+        return str(candidate.resolve(strict=False))
+    return None
+
+
+def _is_executable_file(path: Path) -> bool:
+    return path.is_file() and os.access(path, os.X_OK)
+
+
 def resolve_swanctl_path() -> str | None:
     path = command_v("swanctl")
     if path:
         return path
     for candidate in SWANCTL_FALLBACK_PATHS:
-        if candidate.is_file() and os.access(candidate, os.X_OK):
+        if _is_executable_file(candidate):
             return str(candidate)
     return None
 
@@ -98,6 +122,62 @@ def rpm_query_file_owner(path: str | Path) -> CommandSpec:
     return CommandSpec(("rpm", "-qf", str(path)), timeout_seconds=10)
 
 
+def development_helper_path_allowed() -> bool:
+    if sys.prefix == sys.base_prefix:
+        return False
+    return Path(sys.prefix).resolve(strict=False) != Path(
+        "/opt/gic-ipsec-client/venv"
+    ).resolve(strict=False)
+
+
+def resolve_helper_path() -> str | None:
+    env_path = os.environ.get(HELPER_ENV_VAR, "")
+    if env_path:
+        resolved = _absolute_executable_path(env_path)
+        if resolved:
+            return resolved
+    for candidate in HELPER_FALLBACK_PATHS:
+        resolved = _absolute_executable_path(candidate)
+        if resolved:
+            return resolved
+    if development_helper_path_allowed():
+        path = command_v("gic-ipsec-helper")
+        if path:
+            return _absolute_executable_path(path)
+    return None
+
+
+def polkit_exec_path(policy_path: Path = POLKIT_POLICY_PATH) -> str:
+    try:
+        root = ET.parse(policy_path).getroot()
+    except (OSError, ET.ParseError):
+        return ""
+    for element in root.iter("annotate"):
+        if element.attrib.get("key") == POLKIT_EXEC_PATH_KEY:
+            return (element.text or "").strip()
+    return ""
+
+
+def helper_installation_diagnostics(
+    *,
+    helper_path: str | None = None,
+    policy_path: Path = POLKIT_POLICY_PATH,
+) -> dict[str, object]:
+    resolved_helper_path = helper_path or resolve_helper_path() or ""
+    resolved_path = Path(resolved_helper_path) if resolved_helper_path else None
+    policy_exec_path = polkit_exec_path(policy_path)
+    return {
+        "resolved_helper_path": resolved_helper_path,
+        "helper_exists": bool(resolved_path and resolved_path.exists()),
+        "helper_executable": bool(resolved_path and os.access(resolved_path, os.X_OK)),
+        "polkit_policy_file_path": str(policy_path),
+        "polkit_exec_path": policy_exec_path,
+        "helper_matches_polkit_exec_path": bool(
+            resolved_helper_path and policy_exec_path and resolved_helper_path == policy_exec_path
+        ),
+    }
+
+
 def systemctl_is_active(service_name: str) -> CommandSpec:
     return CommandSpec(("systemctl", "is-active", service_name), timeout_seconds=10)
 
@@ -128,7 +208,10 @@ def nmcli_device_show() -> CommandSpec:
 
 
 def build_pkexec_helper_command(subcommand: str, *args: str) -> CommandSpec:
-    return CommandSpec(("pkexec", "gic-ipsec-helper", subcommand, *args), timeout_seconds=120)
+    helper_path = resolve_helper_path()
+    if not helper_path:
+        raise FileNotFoundError(HELPER_NOT_FOUND_MESSAGE)
+    return CommandSpec(("pkexec", helper_path, subcommand, *args), timeout_seconds=120)
 
 
 def profile_paths(

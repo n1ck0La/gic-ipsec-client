@@ -80,14 +80,17 @@ class StrongSwanBackend:
         *,
         config_root_override: str = "",
     ) -> ConnectionStatus:
-        completed = commands.run_command(
-            commands.build_pkexec_helper_command(
-                "status-profile",
-                "--profile-uuid",
-                profile.id,
-                *self._config_root_args(config_root_override),
+        try:
+            completed = commands.run_command(
+                commands.build_pkexec_helper_command(
+                    "status-profile",
+                    "--profile-uuid",
+                    profile.id,
+                    *self._config_root_args(config_root_override),
+                )
             )
-        )
+        except FileNotFoundError:
+            return ConnectionStatus.FAILED
         output = ((completed.stdout or "") + (completed.stderr or "")).strip()
         if completed.returncode != 0:
             return ConnectionStatus.FAILED
@@ -96,14 +99,17 @@ class StrongSwanBackend:
         return ConnectionStatus.DISCONNECTED
 
     def delete_profile(self, profile_id: str, *, config_root_override: str = "") -> list[Path]:
-        completed = commands.run_command(
-            commands.build_pkexec_helper_command(
-                "delete-profile",
-                "--profile-uuid",
-                profile_id,
-                *self._config_root_args(config_root_override),
+        try:
+            completed = commands.run_command(
+                commands.build_pkexec_helper_command(
+                    "delete-profile",
+                    "--profile-uuid",
+                    profile_id,
+                    *self._config_root_args(config_root_override),
+                )
             )
-        )
+        except FileNotFoundError:
+            return []
         if completed.returncode != 0:
             return []
         try:
@@ -160,8 +166,12 @@ class StrongSwanBackend:
 
     @staticmethod
     def _run_helper(subcommand: str, success_message: str, *args: str) -> BackendResult:
+        try:
+            command = commands.build_pkexec_helper_command(subcommand, *args)
+        except FileNotFoundError as exc:
+            return BackendResult(ok=False, message=str(exc), stderr=str(exc))
         return StrongSwanBackend._run(
-            commands.build_pkexec_helper_command(subcommand, *args),
+            command,
             success_message,
         )
 
