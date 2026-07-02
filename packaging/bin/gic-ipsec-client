@@ -1,2 +1,2 @@
 #!/usr/bin/env sh
-exec /opt/gic-ipsec-client/venv/bin/gic-ipsec-client "$@"
+exec /opt/gic-ipsec-client/venv/bin/python -m gic_ipsec_client "$@"

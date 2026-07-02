@@ -44,7 +44,7 @@ overrides:
   rpm:
     depends:
       - strongswan
-      - strongswan-swanctl
+      - /usr/sbin/swanctl
       - python3
       - polkit
       - NetworkManager

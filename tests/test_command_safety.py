@@ -10,6 +10,7 @@ from gic_ipsec_client.backend.models import ConnectionStatus, VpnProfile
 from gic_ipsec_client.backend.strongswan import StrongSwanBackend
 from gic_ipsec_client.backend.swanctl_paths import SwanctlLayout
 from gic_ipsec_client.backend.validators import ProfileValidationError
+from gic_ipsec_client.main import main
 
 
 def test_commands_are_argument_arrays_without_shell() -> None:
@@ -111,3 +112,11 @@ def test_backend_vici_commands_use_privileged_helper(monkeypatch: pytest.MonkeyP
     assert calls
     assert all(call[0] == "pkexec" for call in calls)
     assert not any(call[0] == "swanctl" for call in calls)
+
+
+def test_gui_entrypoint_version_is_headless(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["gic-ipsec-client", "--version"]) == 0
+
+    output = capsys.readouterr().out
+
+    assert output.startswith("gic-ipsec-client ")

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from gic_ipsec_client.backend.models import VpnProfile, fortigate_default_profile
@@ -91,17 +90,28 @@ def test_fortigate_preset_is_site_neutral() -> None:
 
 def test_packaging_layout_targets_requested_paths() -> None:
     nfpm = (ROOT / "packaging" / "nfpm.yaml").read_text(encoding="utf-8")
+    deb_section = nfpm.split("  deb:", 1)[1].split("  rpm:", 1)[0]
+    rpm_section = nfpm.split("  rpm:", 1)[1]
 
     assert "name: gic-ipsec-client" in nfpm
     assert "dst: /opt/gic-ipsec-client/app" in nfpm
     assert "dst: /opt/gic-ipsec-client/venv" in nfpm
     assert "dst: /usr/bin/gic-ipsec-client" in nfpm
     assert "dst: /usr/libexec/gic-ipsec-client/gic-ipsec-helper" in nfpm
+    assert "mode: 0755" in nfpm
     assert "dst: /usr/share/icons/hicolor/scalable/apps/gic-ipsec-client.svg" in nfpm
     assert "dst: /usr/share/polkit-1/actions/com.gicipsec.client.policy" in nfpm
     assert "dst: /etc/gic-ipsec-client/defaults.json" in nfpm
-    assert "strongswan-swanctl" in nfpm
-    assert "swanctl" in nfpm
+    assert "strongswan-swanctl" not in nfpm
+    assert "- swanctl" in deb_section
+    assert "- /usr/sbin/swanctl" in rpm_section
+    assert "- strongswan" in rpm_section
+    assert "- python3" in rpm_section
+    assert "- polkit" in rpm_section
+    assert "- NetworkManager" in rpm_section
+    assert "- systemd-resolved" in rpm_section
+    assert "- iproute" in rpm_section
+    assert "- bind-utils" in rpm_section
 
     client_wrapper = ROOT / "packaging" / "bin" / "gic-ipsec-client"
     helper_wrapper = ROOT / "packaging" / "libexec" / "gic-ipsec-helper"
@@ -109,12 +119,47 @@ def test_packaging_layout_targets_requested_paths() -> None:
         encoding="utf-8"
     )
 
-    assert os.access(client_wrapper, os.X_OK)
-    assert os.access(helper_wrapper, os.X_OK)
-    assert "/opt/gic-ipsec-client/venv/bin/gic-ipsec-client" in client_wrapper.read_text(
+    assert client_wrapper.exists()
+    assert helper_wrapper.exists()
+    assert "/opt/gic-ipsec-client/venv/bin/python -m gic_ipsec_client" in client_wrapper.read_text(
         encoding="utf-8"
     )
-    assert "/opt/gic-ipsec-client/venv/bin/gic-ipsec-helper" in helper_wrapper.read_text(
-        encoding="utf-8"
+    assert (
+        "/opt/gic-ipsec-client/venv/bin/python -m gic_ipsec_client.helper.cli"
+        in helper_wrapper.read_text(encoding="utf-8")
     )
     assert "/usr/libexec/gic-ipsec-client/gic-ipsec-helper" in policy
+
+
+def test_package_builder_checks_nfpm_before_creating_venv() -> None:
+    script = (ROOT / "packaging" / "build-packages.sh").read_text(encoding="utf-8")
+
+    assert script.index('command -v "$NFPM"') < script.index("python3 -m venv")
+    assert "NFPM=/absolute/path/to/nfpm" in script
+
+
+def test_fedora_package_smoke_workflow_installs_built_rpm() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "fedora-rpm-package.yml").read_text(
+        encoding="utf-8"
+    )
+    provider_script = (
+        ROOT / "packaging" / "fedora" / "validate-swanctl-provider.sh"
+    ).read_text(encoding="utf-8")
+    fedora_deps = (ROOT / "packaging" / "fedora" / "install-deps.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "image: fedora:latest" in workflow
+    assert "build-rpm:" in workflow
+    assert "install-smoke:" in workflow
+    assert "needs: build-rpm" in workflow
+    assert "actions/upload-artifact@v4" in workflow
+    assert "actions/download-artifact@v4" in workflow
+    assert "bash ./packaging/build-packages.sh" in workflow
+    assert "dnf -y install ./dist/gic-ipsec-client-*-1.x86_64.rpm" in workflow
+    assert "which swanctl" in workflow
+    assert "swanctl --version" in workflow
+    assert "gic-ipsec-client --version" in workflow
+    assert "dnf repoquery --whatprovides '*/swanctl'" in workflow
+    assert "dnf repoquery --whatprovides '*/swanctl'" in provider_script
+    assert "strongswan-swanctl" not in fedora_deps

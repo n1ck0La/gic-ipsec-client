@@ -23,11 +23,13 @@ profiles, and secrets are stored only through Linux Secret Service/keyring.
 ## Development
 
 ```bash
+git clone https://github.com/n1ck0La/gic-ipsec-client
+cd gic-ipsec-client
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -e '.[dev]'
-pytest
-ruff check .
+python -m pytest
+python -m ruff check .
 ```
 
 Run the GUI:
@@ -47,7 +49,14 @@ gic-ipsec-helper --help
 Install nfpm, then run:
 
 ```bash
-./packaging/build-packages.sh
+bash ./packaging/build-packages.sh
+```
+
+On Fedora, confirm the package that provides `swanctl` before validating RPM
+dependencies:
+
+```bash
+dnf repoquery --whatprovides '*/swanctl'
 ```
 
 Expected outputs:

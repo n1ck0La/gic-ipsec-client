@@ -2,9 +2,14 @@ from __future__ import annotations
 
 import sys
 
+from gic_ipsec_client import __version__
+
 
 def main(argv: list[str] | None = None) -> int:
     args = argv if argv is not None else sys.argv
+    if len(args) > 1 and args[1] in {"--version", "-V"}:
+        print(f"gic-ipsec-client {__version__}")
+        return 0
     try:
         from PySide6.QtWidgets import QApplication
 

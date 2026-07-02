@@ -290,7 +290,8 @@ def install_hint(os_release: dict[str, str] | None = None) -> str:
     if family == "fedora":
         return (
             "Use packaging/fedora/install-deps.sh, or install python3, python3-pip, "
-            "strongswan, strongswan-swanctl if packaged separately, polkit, and libsecret."
+            "strongswan, polkit, NetworkManager, systemd-resolved, iproute, bind-utils, "
+            "and libsecret packages."
         )
     return "Install Python 3.11+, strongSwan swanctl/VICI, polkit, and libsecret for your distro."
 

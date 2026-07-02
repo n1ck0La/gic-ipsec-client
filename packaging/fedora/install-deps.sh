@@ -19,7 +19,6 @@ packages="
 python3
 python3-pip
 strongswan
-strongswan-swanctl
 polkit
 NetworkManager
 systemd-resolved

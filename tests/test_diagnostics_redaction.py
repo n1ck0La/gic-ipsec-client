@@ -11,6 +11,7 @@ from gic_ipsec_client.backend.diagnostics import (
     diagnostic_hints,
     dns_query_used_unexpected_link,
     dummy_dns_link_ignored,
+    install_hint,
     internal_dns_test_names,
     profile_dns_test_names,
     redact_mapping,
@@ -246,3 +247,11 @@ def test_strongswan_dns_hook_failure_is_nonfatal_when_app_dns_succeeds() -> None
     )
 
     assert STRONGSWAN_DNS_HOOK_NONFATAL_HINT in hints
+
+
+def test_fedora_install_hint_does_not_use_debian_swanctl_package_name() -> None:
+    hint = install_hint({"ID": "fedora"})
+
+    assert "strongswan-swanctl" not in hint
+    assert "strongswan" in hint
+    assert "bind-utils" in hint
