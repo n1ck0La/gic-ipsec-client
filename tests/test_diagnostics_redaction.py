@@ -257,6 +257,10 @@ def test_fedora_install_hint_does_not_use_debian_swanctl_package_name() -> None:
     assert "bind-utils" in hint
 
 
-def test_diagnostics_install_hints_do_not_reference_fedora_only_bad_package() -> None:
+def test_diagnostics_install_hints_keep_fedora_and_ubuntu_packages_separate() -> None:
+    ubuntu_hint = install_hint({"ID": "ubuntu"})
+
     assert "strongswan-swanctl" not in install_hint({"ID": "fedora"})
-    assert "strongswan-swanctl" not in install_hint({"ID": "ubuntu"})
+    assert "strongswan-swanctl" in ubuntu_hint
+    assert "libcharon-extra-plugins" in ubuntu_hint
+    assert " swanctl," not in ubuntu_hint

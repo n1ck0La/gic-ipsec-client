@@ -19,18 +19,15 @@ packages="
 python3
 python3-pip
 python3-venv
-strongswan-swanctl
-charon-systemd
 strongswan
-swanctl
-strongswan-libcharon-extra-plugins
-policykit-1
+strongswan-swanctl
+libcharon-extauth-plugins
+libcharon-extra-plugins
 polkitd
-network-manager
-systemd-resolved
-iproute2
-dnsutils
+policykit-1
 libsecret-1-0
+iproute2
+systemd
 libsecret-tools
 "
 
@@ -48,4 +45,4 @@ echo
 echo "Install command:"
 echo "  sudo apt-get update && sudo apt-get install$installable"
 echo
-echo "If charon-systemd is unavailable on your release, install the distro's strongSwan service package."
+echo "If polkitd is unavailable on your release, policykit-1 is the fallback package name."

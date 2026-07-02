@@ -34,13 +34,14 @@ overrides:
   deb:
     depends:
       - strongswan
-      - swanctl
+      - strongswan-swanctl
+      - libcharon-extauth-plugins
+      - libcharon-extra-plugins
       - python3
-      - policykit-1
-      - network-manager
-      - systemd-resolved
+      - polkitd | policykit-1
+      - libsecret-1-0
       - iproute2
-      - dnsutils
+      - systemd
   rpm:
     depends:
       - strongswan

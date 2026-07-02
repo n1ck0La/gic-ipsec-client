@@ -77,6 +77,19 @@ Expected outputs:
 - `dist/gic-ipsec-client_<version>_amd64.deb`
 - `dist/gic-ipsec-client-<version>-1.x86_64.rpm`
 
+Install the local Ubuntu package with `apt` so package dependencies are resolved:
+
+```bash
+sudo apt update
+sudo apt install ./gic-ipsec-client_0.1.0_amd64.deb
+```
+
+If you already tried installing with `dpkg -i`, repair dependencies with:
+
+```bash
+sudo apt -f install
+```
+
 The package layout installs:
 
 - `/opt/gic-ipsec-client/app`

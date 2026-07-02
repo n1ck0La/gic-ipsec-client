@@ -1,0 +1,57 @@
+name: Ubuntu DEB package
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-deb:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install build tools
+        run: |
+          sudo apt update
+          sudo apt install -y git golang python3 python3-pip python3-venv
+          GOBIN="$HOME/go/bin" go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+          echo "$HOME/go/bin" >> "$GITHUB_PATH"
+          "$HOME/go/bin/nfpm" --version
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build DEB
+        run: bash ./packaging/build-packages.sh
+
+      - name: Upload DEB artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gic-ipsec-client-deb
+          path: dist/gic-ipsec-client_*.deb
+          if-no-files-found: error
+
+  install-smoke:
+    runs-on: ubuntu-latest
+    needs: build-deb
+
+    steps:
+      - name: Download DEB artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: gic-ipsec-client-deb
+          path: dist
+
+      - name: Inspect DEB dependencies
+        run: |
+          dpkg-deb -I dist/gic-ipsec-client_*.deb | grep Depends | tee deb-depends.txt
+          grep -F 'strongswan-swanctl' deb-depends.txt
+          ! grep -E '(^|[[:space:],])swanctl([[:space:],(]|$)' deb-depends.txt
+
+      - name: Install DEB in clean Ubuntu runner
+        run: |
+          sudo apt update
+          sudo apt install -y ./dist/gic-ipsec-client_*.deb
+          command -v gic-ipsec-client
+          test -x /usr/lib/gic-ipsec-client/gic-ipsec-helper || test -x /usr/libexec/gic-ipsec-client/gic-ipsec-helper
+          command -v swanctl

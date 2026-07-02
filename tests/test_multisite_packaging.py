@@ -105,11 +105,18 @@ def test_packaging_layout_targets_requested_paths() -> None:
     assert "dst: /usr/share/icons/hicolor/scalable/apps/gic-ipsec-client.svg" in nfpm
     assert "dst: /usr/share/polkit-1/actions/com.gicipsec.client.policy" in nfpm
     assert "dst: /etc/gic-ipsec-client/defaults.json" in nfpm
-    assert "strongswan-swanctl" not in nfpm
     assert "/usr/sbin/swanctl" not in rpm_section
     assert "/usr/bin/swanctl" not in rpm_section
     assert "strongswan-swanctl" not in rpm_section
-    assert "- swanctl" in deb_section
+    assert "- swanctl" not in deb_section
+    assert "- strongswan" in deb_section
+    assert "- strongswan-swanctl" in deb_section
+    assert "- libcharon-extauth-plugins" in deb_section
+    assert "- libcharon-extra-plugins" in deb_section
+    assert "- polkitd | policykit-1" in deb_section
+    assert "- libsecret-1-0" in deb_section
+    assert "- iproute2" in deb_section
+    assert "- systemd" in deb_section
     assert "- strongswan" in rpm_section
     assert "Requires: strongswan" in fedora_spec
     assert "Requires: /usr/sbin/swanctl" not in fedora_spec
@@ -177,3 +184,37 @@ def test_fedora_package_smoke_workflow_installs_built_rpm() -> None:
     assert "dnf repoquery --whatprovides '*/swanctl'" in workflow
     assert "dnf repoquery --whatprovides '*/swanctl'" in provider_script
     assert "strongswan-swanctl" not in fedora_deps
+
+
+def test_ubuntu_package_smoke_workflow_installs_built_deb() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "ubuntu-deb-package.yml").read_text(
+        encoding="utf-8"
+    )
+    ubuntu_deps = (ROOT / "packaging" / "ubuntu" / "install-deps.sh").read_text(
+        encoding="utf-8"
+    )
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "runs-on: ubuntu-latest" in workflow
+    assert "build-deb:" in workflow
+    assert "install-smoke:" in workflow
+    assert "needs: build-deb" in workflow
+    assert "actions/upload-artifact@v4" in workflow
+    assert "actions/download-artifact@v4" in workflow
+    assert "bash ./packaging/build-packages.sh" in workflow
+    assert "dpkg-deb -I dist/gic-ipsec-client_*.deb | grep Depends" in workflow
+    assert "grep -F 'strongswan-swanctl' deb-depends.txt" in workflow
+    assert "! grep -E '(^|[[:space:],])swanctl([[:space:],(]|$)' deb-depends.txt" in workflow
+    assert "sudo apt update" in workflow
+    assert "sudo apt install -y ./dist/gic-ipsec-client_*.deb" in workflow
+    assert "command -v gic-ipsec-client" in workflow
+    assert "command -v swanctl" in workflow
+    assert "test -x /usr/lib/gic-ipsec-client/gic-ipsec-helper" in workflow
+    assert "test -x /usr/libexec/gic-ipsec-client/gic-ipsec-helper" in workflow
+    assert "strongswan-swanctl" in ubuntu_deps
+    assert "\nswanctl\n" not in ubuntu_deps
+    assert "libcharon-extauth-plugins" in ubuntu_deps
+    assert "libcharon-extra-plugins" in ubuntu_deps
+    assert "sudo apt install ./gic-ipsec-client_0.1.0_amd64.deb" in readme
+    assert "sudo apt -f install" in readme
+    assert "sudo dpkg -i" not in readme

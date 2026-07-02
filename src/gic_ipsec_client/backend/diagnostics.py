@@ -285,8 +285,9 @@ def install_hint(os_release: dict[str, str] | None = None) -> str:
     if family == "debian":
         return (
             "Use packaging/ubuntu/install-deps.sh, or install python3, python3-pip, "
-            "python3-venv, swanctl, charon-systemd/strongswan, polkit, and libsecret "
-            "packages."
+            "python3-venv, strongswan, strongswan-swanctl, libcharon-extauth-plugins, "
+            "libcharon-extra-plugins, polkitd or policykit-1, libsecret-1-0, "
+            "iproute2, and systemd packages."
         )
     if family == "fedora":
         return (
