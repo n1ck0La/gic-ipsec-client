@@ -69,6 +69,7 @@ sudo dnf install nfpm
 Then run:
 
 ```bash
+cd gic-ipsec-client
 bash ./packaging/build-packages.sh
 ```
 
