@@ -2,12 +2,10 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
-from collections.abc import Callable
 from pathlib import Path
 from uuid import uuid4
 
-from PySide6.QtCore import QObject, Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, Slot
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -28,16 +26,23 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from gic_ipsec_client.backend import commands, secrets
+from gic_ipsec_client.backend import secrets
 from gic_ipsec_client.backend.diagnostics import redact_text
 from gic_ipsec_client.backend.models import ConnectionStatus, VpnProfile
 from gic_ipsec_client.backend.settings import AppSettings, load_app_settings, save_app_settings
-from gic_ipsec_client.backend.strongswan import StrongSwanBackend
 from gic_ipsec_client.backend.swanctl_paths import DEBIAN_SWANCTL_ROOT, FEDORA_SWANCTL_ROOT
 from gic_ipsec_client.backend.validators import ProfileValidationError, validate_profile
 from gic_ipsec_client.gui.log_viewer import LogViewer
 from gic_ipsec_client.gui.profile_editor import ProfileEditor
 from gic_ipsec_client.gui.status_panel import StatusPanel
+from gic_ipsec_client.gui.workers import (
+    ConnectResult,
+    ConnectWorker,
+    DebugBundleWorker,
+    DiagnosticsWorker,
+    HelperResult,
+    HelperWorker,
+)
 
 
 def _config_dir() -> Path:
@@ -50,27 +55,11 @@ def _request_dir() -> Path:
     )
 
 
-class BackgroundTask(QObject):
-    finished = Signal(object)
-    failed = Signal(str)
-
-    def __init__(self, task: Callable[[], object]) -> None:
-        super().__init__()
-        self._task = task
-
-    def run(self) -> None:
-        try:
-            self.finished.emit(self._task())
-        except Exception as exc:  # noqa: BLE001
-            self.failed.emit(str(exc))
-
-
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("GIC IPsec Client")
         self.resize(980, 620)
-        self.backend = StrongSwanBackend()
         self.settings = load_app_settings()
         self.profiles: dict[str, VpnProfile] = {}
         self.profile_list = QListWidget()
@@ -78,12 +67,25 @@ class MainWindow(QMainWindow):
         self.log_viewer = LogViewer()
         self.last_diagnostics = ""
         self.last_helper_output = ""
-        self._background_tasks: list[tuple[QThread, BackgroundTask]] = []
+        self._connect_thread: QThread | None = None
+        self._connect_worker: ConnectWorker | None = None
+        self._disconnect_thread: QThread | None = None
+        self._disconnect_worker: HelperWorker | None = None
+        self._reconnect_thread: QThread | None = None
+        self._reconnect_worker: HelperWorker | None = None
+        self._delete_thread: QThread | None = None
+        self._delete_worker: HelperWorker | None = None
+        self._diagnostics_thread: QThread | None = None
+        self._diagnostics_worker: DiagnosticsWorker | None = None
+        self._export_thread: QThread | None = None
+        self._export_worker: DebugBundleWorker | None = None
+        self._pending_delete_profile_id = ""
+        self._pending_delete_profile_name = ""
 
         self._build_ui()
         self._load_profiles()
         self._refresh_profile_list()
-        self.log_viewer.append_log("Ready.")
+        self._append_log("Ready.")
 
     def _build_ui(self) -> None:
         toolbar = QToolBar("Profiles")
@@ -176,7 +178,7 @@ class MainWindow(QMainWindow):
                 item["id"]: VpnProfile.from_dict(item) for item in payload.get("profiles", [])
             }
         except (OSError, json.JSONDecodeError, TypeError, KeyError) as exc:
-            self.log_viewer.append_log(f"Could not load saved profiles: {exc}")
+            self._append_log(f"Could not load saved profiles: {exc}")
 
     def _save_profiles(self) -> None:
         _config_dir().mkdir(parents=True, exist_ok=True)
@@ -191,9 +193,10 @@ class MainWindow(QMainWindow):
         )
 
     def _refresh_profile_list(self) -> None:
+        self._assert_ui_thread()
         self.profile_list.clear()
         if not self.profiles:
-            self.log_viewer.append_log("No VPN profiles configured.")
+            self._append_log("No VPN profiles configured.")
             return
         for profile in sorted(self.profiles.values(), key=lambda item: item.profile_name.lower()):
             item = QListWidgetItem(profile.profile_name)
@@ -255,30 +258,17 @@ class MainWindow(QMainWindow):
         if not profile:
             QMessageBox.information(self, "No profile selected", "Select a profile first.")
             return
-        profile_id = profile.id
-        profile_name = profile.profile_name
-        config_args = self._config_root_args()
-
-        def task() -> object:
-            return self._run_helper_command(
-                "delete-profile",
-                "--profile-uuid",
-                profile_id,
-                *config_args,
-            )
-
-        def finished(result: object) -> None:
-            code, output = self._coerce_helper_result(result)
-            self._record_helper_output(output)
-            if code != 0:
-                return
-            secrets.delete_profile_secrets(profile_id)
-            self.profiles.pop(profile_id, None)
-            self._save_profiles()
-            self._refresh_profile_list()
-            self.log_viewer.append_log(f"Deleted profile {profile_name}.")
-
-        self._run_background_task(task, finished, self._background_helper_failed)
+        if self._delete_thread and self._delete_thread.isRunning():
+            self._append_log("Delete already in progress.")
+            return
+        self._pending_delete_profile_id = profile.id
+        self._pending_delete_profile_name = profile.profile_name
+        worker = HelperWorker(
+            "delete-profile",
+            ("--profile-uuid", profile.id, *self._config_root_args()),
+            progress_message="Deleting profile...",
+        )
+        self._start_delete_worker(worker)
 
     def import_profile(self) -> None:
         file_name, _ = QFileDialog.getOpenFileName(self, "Import profile", "", "JSON (*.json)")
@@ -333,133 +323,59 @@ class MainWindow(QMainWindow):
         except (ProfileValidationError, secrets.SecretStorageUnavailable) as exc:
             QMessageBox.warning(self, "Profile error", str(exc))
             return
-        self.status_panel.set_status(ConnectionStatus.CONNECTING)
+        if self._connect_thread and self._connect_thread.isRunning():
+            self._append_log("Connect already in progress.")
+            return
+        self._set_status(ConnectionStatus.CONNECTING)
         request_path = self._write_helper_request(profile)
-        profile_id = profile.id
-        config_args = self._config_root_args()
-
-        def task() -> object:
-            render_code, render_output = self._run_helper_command(
-                "render-profile",
-                "--request",
-                str(request_path),
-                *config_args,
-            )
-            if render_code != 0:
-                return {
-                    "render_code": render_code,
-                    "render_output": render_output,
-                    "connect_code": 1,
-                    "connect_output": "",
-                }
-            connect_code, connect_output = self._run_helper_command(
-                "connect-profile",
-                "--profile-uuid",
-                profile_id,
-                *config_args,
-            )
-            return {
-                "render_code": render_code,
-                "render_output": render_output,
-                "connect_code": connect_code,
-                "connect_output": connect_output,
-            }
-
-        def finished(result: object) -> None:
-            payload = result if isinstance(result, dict) else {}
-            render_code = int(payload.get("render_code", 1))
-            connect_code = int(payload.get("connect_code", 1))
-            output = "\n".join(
-                part
-                for part in (
-                    str(payload.get("render_output", "") or ""),
-                    str(payload.get("connect_output", "") or ""),
-                )
-                if part
-            )
-            self._record_helper_output(output)
-            failed = render_code != 0 or connect_code != 0
-            self.status_panel.set_status(
-                ConnectionStatus.FAILED if failed else ConnectionStatus.CONNECTED
-            )
-            if not failed:
-                self.disconnect_warning_label.setVisible(False)
-
-        self._run_background_task(task, finished, self._background_helper_failed)
+        worker = ConnectWorker(
+            request_path=str(request_path),
+            profile_id=profile.id,
+            config_args=self._config_root_args(),
+        )
+        self._start_connect_worker(worker)
 
     def disconnect_profile(self) -> None:
         profile = self._selected_profile()
         if not profile:
             QMessageBox.information(self, "No profile selected", "Select a profile first.")
             return
-        profile_id = profile.id
-        config_args = self._config_root_args()
-
-        def task() -> object:
-            return self._run_helper_command(
-                "disconnect-profile",
-                "--profile-uuid",
-                profile_id,
-                *config_args,
-            )
-
-        def finished(result: object) -> None:
-            code, output = self._coerce_helper_result(result)
-            self._record_helper_output(output)
-            self.status_panel.set_status(
-                ConnectionStatus.DISCONNECTED if code == 0 else ConnectionStatus.FAILED
-            )
-            self.disconnect_warning_label.setVisible(
-                code == 0 and "Disconnect completed with warnings" in self.last_helper_output
-            )
-            self.reconnect_button.setVisible(
-                code != 0 and "Reconnect network interface is available" in self.last_helper_output
-            )
-
-        self._run_background_task(task, finished, self._background_helper_failed)
+        if self._disconnect_thread and self._disconnect_thread.isRunning():
+            self._append_log("Disconnect already in progress.")
+            return
+        worker = HelperWorker(
+            "disconnect-profile",
+            ("--profile-uuid", profile.id, *self._config_root_args()),
+            progress_message="Disconnecting profile...",
+        )
+        self._start_disconnect_worker(worker)
 
     def reconnect_network_interface(self) -> None:
         profile = self._selected_profile()
         if not profile:
             QMessageBox.information(self, "No profile selected", "Select a profile first.")
             return
-        profile_id = profile.id
-
-        def task() -> object:
-            return self._run_helper_command(
-                "reconnect-network-interface",
-                "--profile-uuid",
-                profile_id,
-            )
-
-        def finished(result: object) -> None:
-            code, output = self._coerce_helper_result(result)
-            self._record_helper_output(output)
-            if code == 0:
-                self.reconnect_button.setVisible(False)
-                self.disconnect_warning_label.setVisible(False)
-
-        self._run_background_task(task, finished, self._background_helper_failed)
+        if self._reconnect_thread and self._reconnect_thread.isRunning():
+            self._append_log("Reconnect already in progress.")
+            return
+        worker = HelperWorker(
+            "reconnect-network-interface",
+            ("--profile-uuid", profile.id),
+            progress_message="Reconnecting network interface...",
+        )
+        self._start_reconnect_worker(worker)
 
     def run_diagnostics(self) -> None:
         profile = self._selected_profile()
         config_root_override = self._config_root_override()
-        self.log_viewer.append_log("Running diagnostics...")
-
-        def task() -> object:
-            return self.backend.collect_diagnostics(
-                profile=profile,
-                config_root_override=config_root_override,
-            )
-
-        def finished(result: object) -> None:
-            if not hasattr(result, "as_text"):
-                self.log_viewer.append_log("Diagnostics failed: invalid report.")
-                return
-            self.last_diagnostics = result.as_text()
-            self.log_viewer.set_log_text(self.last_diagnostics)
-
-        self._run_background_task(task, finished, self._background_diagnostics_failed)
+        if self._diagnostics_thread and self._diagnostics_thread.isRunning():
+            self._append_log("Diagnostics already in progress.")
+            return
+        worker = DiagnosticsWorker(
+            profile=profile,
+            config_root_override=config_root_override,
+        )
+        self._start_diagnostics_worker(worker)
 
     def test_dns(self) -> None:
         self.run_diagnostics()
@@ -471,27 +387,23 @@ class MainWindow(QMainWindow):
         profile = self._selected_profile()
         config_root_override = self._config_root_override()
         output_dir = Path(directory)
-        self.log_viewer.append_log("Exporting sanitized debug bundle...")
-
-        def task() -> object:
-            return self.backend.export_debug_bundle(
-                output_dir,
-                profile=profile,
-                config_root_override=config_root_override,
-            )
-
-        def finished(result: object) -> None:
-            self.log_viewer.append_log(f"Exported sanitized debug bundle: {result}")
-
-        self._run_background_task(task, finished, self._background_diagnostics_failed)
+        if self._export_thread and self._export_thread.isRunning():
+            self._append_log("Diagnostics export already in progress.")
+            return
+        worker = DebugBundleWorker(
+            output_dir=output_dir,
+            profile=profile,
+            config_root_override=config_root_override,
+        )
+        self._start_export_worker(worker)
 
     def copy_diagnostics_summary(self) -> None:
         if not self.last_diagnostics:
             self.run_diagnostics()
-            self.log_viewer.append_log("Diagnostics are running; copy again when they finish.")
+            self._append_log("Diagnostics are running; copy again when they finish.")
             return
         QApplication.clipboard().setText(redact_text(self.last_diagnostics))
-        self.log_viewer.append_log("Diagnostics summary copied.")
+        self._append_log("Diagnostics summary copied.")
 
     def edit_settings(self) -> None:
         dialog = SettingsDialog(self.settings, self)
@@ -500,52 +412,245 @@ class MainWindow(QMainWindow):
         self.settings = dialog.settings()
         save_app_settings(self.settings)
         selected = self._config_root_override() or "Automatic"
-        self.log_viewer.append_log(f"Settings saved. swanctl config root: {selected}")
+        self._append_log(f"Settings saved. swanctl config root: {selected}")
 
-    def _run_background_task(
+    def _wire_worker(
         self,
-        task: Callable[[], object],
-        on_finished: Callable[[object], None],
-        on_failed: Callable[[str], None],
+        *,
+        thread: QThread,
+        worker: HelperWorker | ConnectWorker | DiagnosticsWorker | DebugBundleWorker,
+        finished_slot: object,
+        failed_slot: object,
+        cleanup_slot: object,
     ) -> None:
-        thread = QThread(self)
-        worker = BackgroundTask(task)
         worker.moveToThread(thread)
-        entry = (thread, worker)
-
-        def cleanup() -> None:
-            if entry in self._background_tasks:
-                self._background_tasks.remove(entry)
-
-        def finished(result: object) -> None:
-            try:
-                on_finished(result)
-            finally:
-                thread.quit()
-
-        def failed(message: str) -> None:
-            try:
-                on_failed(message)
-            finally:
-                thread.quit()
-
-        thread.started.connect(worker.run)
-        worker.finished.connect(finished)
-        worker.failed.connect(failed)
+        worker.progress.connect(self._on_worker_progress)
+        worker.finished.connect(finished_slot)
+        worker.failed.connect(failed_slot)
         worker.finished.connect(worker.deleteLater)
         worker.failed.connect(worker.deleteLater)
-        thread.finished.connect(cleanup)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(cleanup_slot)
         thread.finished.connect(thread.deleteLater)
-        self._background_tasks.append(entry)
-        thread.start()
 
-    def _background_helper_failed(self, message: str) -> None:
+    def _start_connect_worker(self, worker: ConnectWorker) -> None:
+        self._assert_ui_thread()
+        self._connect_thread = QThread(self)
+        self._connect_worker = worker
+        self._wire_worker(
+            thread=self._connect_thread,
+            worker=self._connect_worker,
+            finished_slot=self._on_connect_finished,
+            failed_slot=self._on_connect_failed,
+            cleanup_slot=self._cleanup_connect_worker,
+        )
+        self._connect_thread.started.connect(self._connect_worker.run)
+        self._connect_thread.start()
+
+    def _start_disconnect_worker(self, worker: HelperWorker) -> None:
+        self._assert_ui_thread()
+        self._disconnect_thread = QThread(self)
+        self._disconnect_worker = worker
+        self._wire_worker(
+            thread=self._disconnect_thread,
+            worker=self._disconnect_worker,
+            finished_slot=self._on_disconnect_finished,
+            failed_slot=self._on_disconnect_failed,
+            cleanup_slot=self._cleanup_disconnect_worker,
+        )
+        self._disconnect_thread.started.connect(self._disconnect_worker.run)
+        self._disconnect_thread.start()
+
+    def _start_reconnect_worker(self, worker: HelperWorker) -> None:
+        self._assert_ui_thread()
+        self._reconnect_thread = QThread(self)
+        self._reconnect_worker = worker
+        self._wire_worker(
+            thread=self._reconnect_thread,
+            worker=self._reconnect_worker,
+            finished_slot=self._on_reconnect_finished,
+            failed_slot=self._on_reconnect_failed,
+            cleanup_slot=self._cleanup_reconnect_worker,
+        )
+        self._reconnect_thread.started.connect(self._reconnect_worker.run)
+        self._reconnect_thread.start()
+
+    def _start_delete_worker(self, worker: HelperWorker) -> None:
+        self._assert_ui_thread()
+        self._delete_thread = QThread(self)
+        self._delete_worker = worker
+        self._wire_worker(
+            thread=self._delete_thread,
+            worker=self._delete_worker,
+            finished_slot=self._on_delete_finished,
+            failed_slot=self._on_delete_failed,
+            cleanup_slot=self._cleanup_delete_worker,
+        )
+        self._delete_thread.started.connect(self._delete_worker.run)
+        self._delete_thread.start()
+
+    def _start_diagnostics_worker(self, worker: DiagnosticsWorker) -> None:
+        self._assert_ui_thread()
+        self._diagnostics_thread = QThread(self)
+        self._diagnostics_worker = worker
+        self._wire_worker(
+            thread=self._diagnostics_thread,
+            worker=self._diagnostics_worker,
+            finished_slot=self._on_diagnostics_finished,
+            failed_slot=self._on_diagnostics_failed,
+            cleanup_slot=self._cleanup_diagnostics_worker,
+        )
+        self._diagnostics_thread.started.connect(self._diagnostics_worker.run)
+        self._diagnostics_thread.start()
+
+    def _start_export_worker(self, worker: DebugBundleWorker) -> None:
+        self._assert_ui_thread()
+        self._export_thread = QThread(self)
+        self._export_worker = worker
+        self._wire_worker(
+            thread=self._export_thread,
+            worker=self._export_worker,
+            finished_slot=self._on_export_finished,
+            failed_slot=self._on_export_failed,
+            cleanup_slot=self._cleanup_export_worker,
+        )
+        self._export_thread.started.connect(self._export_worker.run)
+        self._export_thread.start()
+
+    @Slot(str)
+    def _on_worker_progress(self, message: str) -> None:
+        self._append_log(message)
+
+    @Slot(object)
+    def _on_connect_finished(self, result: object) -> None:
+        self._assert_ui_thread()
+        if not isinstance(result, ConnectResult):
+            self._on_connect_failed("Connect failed: invalid worker result.")
+            return
+        self._record_helper_output(result.output)
+        self._set_status(ConnectionStatus.CONNECTED if result.ok else ConnectionStatus.FAILED)
+        if result.ok:
+            self.disconnect_warning_label.setVisible(False)
+
+    @Slot(str)
+    def _on_connect_failed(self, message: str) -> None:
+        self._helper_failed(message)
+
+    @Slot(object)
+    def _on_disconnect_finished(self, result: object) -> None:
+        self._assert_ui_thread()
+        code, output = self._coerce_helper_result(result)
+        self._record_helper_output(output)
+        self._set_status(ConnectionStatus.DISCONNECTED if code == 0 else ConnectionStatus.FAILED)
+        self.disconnect_warning_label.setVisible(
+            code == 0 and "Disconnect completed with warnings" in self.last_helper_output
+        )
+        self.reconnect_button.setVisible(
+            code != 0 and "Reconnect network interface is available" in self.last_helper_output
+        )
+
+    @Slot(str)
+    def _on_disconnect_failed(self, message: str) -> None:
+        self._helper_failed(message)
+
+    @Slot(object)
+    def _on_reconnect_finished(self, result: object) -> None:
+        self._assert_ui_thread()
+        code, output = self._coerce_helper_result(result)
+        self._record_helper_output(output)
+        if code == 0:
+            self.reconnect_button.setVisible(False)
+            self.disconnect_warning_label.setVisible(False)
+
+    @Slot(str)
+    def _on_reconnect_failed(self, message: str) -> None:
+        self._helper_failed(message)
+
+    @Slot(object)
+    def _on_delete_finished(self, result: object) -> None:
+        self._assert_ui_thread()
+        code, output = self._coerce_helper_result(result)
+        self._record_helper_output(output)
+        if code != 0:
+            return
+        profile_id = self._pending_delete_profile_id
+        profile_name = self._pending_delete_profile_name
+        secrets.delete_profile_secrets(profile_id)
+        self.profiles.pop(profile_id, None)
+        self._save_profiles()
+        self._refresh_profile_list()
+        self._append_log(f"Deleted profile {profile_name}.")
+
+    @Slot(str)
+    def _on_delete_failed(self, message: str) -> None:
+        self._helper_failed(message)
+
+    @Slot(object)
+    def _on_diagnostics_finished(self, result: object) -> None:
+        self._assert_ui_thread()
+        if not hasattr(result, "as_text"):
+            self._append_log("Diagnostics failed: invalid report.")
+            return
+        self.last_diagnostics = result.as_text()
+        self._set_log_text(self.last_diagnostics)
+
+    @Slot(str)
+    def _on_diagnostics_failed(self, message: str) -> None:
+        self._append_log(f"Diagnostics failed: {message}")
+
+    @Slot(object)
+    def _on_export_finished(self, result: object) -> None:
+        self._assert_ui_thread()
+        self._append_log(f"Exported sanitized debug bundle: {result}")
+
+    @Slot(str)
+    def _on_export_failed(self, message: str) -> None:
+        self._append_log(f"Diagnostics export failed: {message}")
+
+    @Slot()
+    def _cleanup_connect_worker(self) -> None:
+        self._assert_ui_thread()
+        self._connect_worker = None
+        self._connect_thread = None
+
+    @Slot()
+    def _cleanup_disconnect_worker(self) -> None:
+        self._assert_ui_thread()
+        self._disconnect_worker = None
+        self._disconnect_thread = None
+
+    @Slot()
+    def _cleanup_reconnect_worker(self) -> None:
+        self._assert_ui_thread()
+        self._reconnect_worker = None
+        self._reconnect_thread = None
+
+    @Slot()
+    def _cleanup_delete_worker(self) -> None:
+        self._assert_ui_thread()
+        self._delete_worker = None
+        self._delete_thread = None
+        self._pending_delete_profile_id = ""
+        self._pending_delete_profile_name = ""
+
+    @Slot()
+    def _cleanup_diagnostics_worker(self) -> None:
+        self._assert_ui_thread()
+        self._diagnostics_worker = None
+        self._diagnostics_thread = None
+
+    @Slot()
+    def _cleanup_export_worker(self) -> None:
+        self._assert_ui_thread()
+        self._export_worker = None
+        self._export_thread = None
+
+    def _helper_failed(self, message: str) -> None:
+        self._assert_ui_thread()
         self.last_helper_output = f"Helper failed: {message}"
-        self.log_viewer.append_log(self.last_helper_output)
-        self.status_panel.set_status(ConnectionStatus.FAILED)
-
-    def _background_diagnostics_failed(self, message: str) -> None:
-        self.log_viewer.append_log(f"Diagnostics failed: {message}")
+        self._append_log(self.last_helper_output)
+        self._set_status(ConnectionStatus.FAILED)
 
     def _write_helper_request(self, profile: VpnProfile) -> Path:
         request_dir = _request_dir()
@@ -561,32 +666,35 @@ class MainWindow(QMainWindow):
         os.chmod(request_path, 0o600)
         return request_path
 
-    def _run_helper_command(self, subcommand: str, *args: str) -> tuple[int, str]:
-        try:
-            command = commands.build_pkexec_helper_command(subcommand, *args)
-            completed = commands.run_command(command)
-        except FileNotFoundError as exc:
-            return 1, str(exc)
-        except (OSError, TimeoutError, subprocess.TimeoutExpired) as exc:
-            return 1, f"Helper failed: {exc}"
-        output = "\n".join(part for part in (completed.stdout, completed.stderr) if part)
-        return completed.returncode, output
+    def _assert_ui_thread(self) -> None:
+        if os.environ.get("GIC_DEBUG_QT_THREADS") != "1":
+            return
+        app = QApplication.instance()
+        if app is not None:
+            assert QThread.currentThread() == app.thread()
+
+    def _append_log(self, message: str) -> None:
+        self._assert_ui_thread()
+        self.log_viewer.append_log(message)
+
+    def _set_log_text(self, message: str) -> None:
+        self._assert_ui_thread()
+        self.log_viewer.set_log_text(message)
+
+    def _set_status(self, status: ConnectionStatus) -> None:
+        self._assert_ui_thread()
+        self.status_panel.set_status(status)
 
     def _record_helper_output(self, output: str) -> None:
+        self._assert_ui_thread()
         self.last_helper_output = output
         if output:
-            self.log_viewer.append_log(output)
+            self._append_log(output)
 
     def _coerce_helper_result(self, result: object) -> tuple[int, str]:
-        if not isinstance(result, tuple) or len(result) != 2:
+        if not isinstance(result, HelperResult):
             return 1, "Helper failed: invalid helper result."
-        code, output = result
-        return int(code), str(output or "")
-
-    def _run_helper(self, subcommand: str, *args: str) -> int:
-        code, output = self._run_helper_command(subcommand, *args)
-        self._record_helper_output(output)
-        return code
+        return result.returncode, result.output
 
     def _config_root_override(self) -> str:
         return self.settings.normalized_swanctl_config_root()
