@@ -263,4 +263,6 @@ def test_diagnostics_install_hints_keep_fedora_and_ubuntu_packages_separate() ->
     assert "strongswan-swanctl" not in install_hint({"ID": "fedora"})
     assert "strongswan-swanctl" in ubuntu_hint
     assert "libcharon-extra-plugins" in ubuntu_hint
+    assert "libstrongswan-extra-plugins" in ubuntu_hint
+    assert "libxcb-cursor0" in ubuntu_hint
     assert " swanctl," not in ubuntu_hint

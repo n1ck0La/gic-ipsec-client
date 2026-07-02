@@ -190,3 +190,86 @@ def test_swanctl_diagnostics_reports_binary_resolution(
     assert payload["command_v_swanctl"] == "/usr/bin/swanctl"
     assert payload["resolved_swanctl_path"] == "/usr/bin/swanctl"
     assert payload["swanctl_rpm_owner"] == "strongswan-6.0.0-1.fc40.x86_64"
+    assert "detected_strongswan_service" in payload
+    assert "run_charon_vici_exists" in payload
+    assert "var_run_charon_vici_exists" in payload
+
+
+def test_strongswan_preflight_detects_starter_first_and_starts_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+    started = {"value": False}
+
+    def fake_run(spec: commands.CommandSpec) -> Completed:
+        calls.append(spec.args)
+        if spec.args == (
+            "systemctl",
+            "list-unit-files",
+            "strongswan-starter.service",
+            "--no-legend",
+        ):
+            return Completed(0, "strongswan-starter.service enabled\n")
+        if spec.args[:2] == ("systemctl", "is-active"):
+            return Completed(3, "inactive\n")
+        if spec.args == ("systemctl", "start", "strongswan-starter"):
+            started["value"] = True
+            return Completed(0, "")
+        if spec.args[:2] == ("systemctl", "list-unit-files"):
+            return Completed(0, "")
+        raise AssertionError(f"unexpected command: {spec.args}")
+
+    def socket_exists(path: Path) -> bool:
+        return started["value"] and path == Path("/run/charon.vici")
+
+    monkeypatch.setattr(commands, "command_v", lambda name: "/usr/bin/swanctl")
+    monkeypatch.setattr(commands, "resolve_swanctl_path", lambda: "/usr/bin/swanctl")
+
+    payload = privileged.strongswan_preflight(
+        run_command=fake_run,
+        socket_exists=socket_exists,
+        sleep=lambda seconds: None,
+    )
+
+    assert payload["detected_strongswan_service"] == "strongswan-starter.service"
+    assert payload["strongswan_service_state"] == "inactive"
+    assert payload["started_strongswan_service"] is True
+    assert payload["run_charon_vici_exists"] is True
+    assert payload["vici_socket_available"] is True
+    assert ("systemctl", "start", "strongswan-starter") in calls
+    assert (
+        "systemctl",
+        "list-unit-files",
+        "strongswan.service",
+        "--no-legend",
+    ) not in calls
+
+
+def test_strongswan_preflight_fails_cleanly_when_vici_socket_never_appears(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(spec: commands.CommandSpec) -> Completed:
+        if spec.args == (
+            "systemctl",
+            "list-unit-files",
+            "strongswan-starter.service",
+            "--no-legend",
+        ):
+            return Completed(0, "strongswan-starter.service enabled\n")
+        if spec.args[:2] == ("systemctl", "is-active"):
+            return Completed(3, "inactive\n")
+        if spec.args == ("systemctl", "start", "strongswan-starter"):
+            return Completed(0, "")
+        if spec.args[:2] == ("systemctl", "list-unit-files"):
+            return Completed(0, "")
+        raise AssertionError(f"unexpected command: {spec.args}")
+
+    monkeypatch.setattr(commands, "command_v", lambda name: "/usr/bin/swanctl")
+    monkeypatch.setattr(commands, "resolve_swanctl_path", lambda: "/usr/bin/swanctl")
+
+    with pytest.raises(privileged.HelperError, match=commands.VICI_UNAVAILABLE_MESSAGE):
+        privileged.strongswan_preflight(
+            run_command=fake_run,
+            socket_exists=lambda path: False,
+            sleep=lambda seconds: None,
+        )

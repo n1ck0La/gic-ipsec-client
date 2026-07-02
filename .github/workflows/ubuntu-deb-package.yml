@@ -46,6 +46,9 @@ jobs:
         run: |
           dpkg-deb -I dist/gic-ipsec-client_*.deb | grep Depends | tee deb-depends.txt
           grep -F 'strongswan-swanctl' deb-depends.txt
+          grep -F 'libstrongswan-extra-plugins' deb-depends.txt
+          grep -F 'libxcb-cursor0' deb-depends.txt
+          grep -F 'libxkbcommon-x11-0' deb-depends.txt
           ! grep -E '(^|[[:space:],])swanctl([[:space:],(]|$)' deb-depends.txt
 
       - name: Install DEB in clean Ubuntu runner
@@ -53,5 +56,7 @@ jobs:
           sudo apt update
           sudo apt install -y ./dist/gic-ipsec-client_*.deb
           command -v gic-ipsec-client
-          test -x /usr/lib/gic-ipsec-client/gic-ipsec-helper || test -x /usr/libexec/gic-ipsec-client/gic-ipsec-helper
+          test -x /usr/libexec/gic-ipsec-client/gic-ipsec-helper
           command -v swanctl
+          dpkg -l | grep -E 'strongswan|swanctl|libxcb-cursor0|libxkbcommon-x11'
+          systemctl list-unit-files | grep -Ei 'strongswan|charon' || true

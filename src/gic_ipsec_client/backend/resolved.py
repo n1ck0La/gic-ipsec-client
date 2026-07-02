@@ -86,11 +86,11 @@ class ResolvedDnsPlan:
 
 
 def resolvectl_status() -> commands.CommandSpec:
-    return commands.CommandSpec(("resolvectl", "status"), timeout_seconds=15)
+    return commands.CommandSpec(("resolvectl", "status"), timeout_seconds=10)
 
 
 def resolvectl_status_interface(interface: str) -> commands.CommandSpec:
-    return commands.CommandSpec(("resolvectl", "status", interface), timeout_seconds=15)
+    return commands.CommandSpec(("resolvectl", "status", interface), timeout_seconds=10)
 
 
 def systemd_resolved_is_active() -> commands.CommandSpec:
@@ -110,11 +110,11 @@ def ip_xfrm_state() -> commands.CommandSpec:
 
 
 def resolvectl_query(name: str) -> commands.CommandSpec:
-    return commands.CommandSpec(("resolvectl", "query", name), timeout_seconds=15)
+    return commands.CommandSpec(("resolvectl", "query", name), timeout_seconds=10)
 
 
 def resolvectl_reset_server_features() -> commands.CommandSpec:
-    return commands.CommandSpec(("resolvectl", "reset-server-features"), timeout_seconds=15)
+    return commands.CommandSpec(("resolvectl", "reset-server-features"), timeout_seconds=10)
 
 
 def resolvectl_dns(
@@ -123,7 +123,7 @@ def resolvectl_dns(
 ) -> commands.CommandSpec:
     return commands.CommandSpec(
         ("resolvectl", "dns", interface, *tuple(dns_servers)),
-        timeout_seconds=15,
+        timeout_seconds=10,
     )
 
 
@@ -132,13 +132,13 @@ def resolvectl_domain(
     domains: list[str] | tuple[str, ...],
 ) -> commands.CommandSpec:
     args = ("resolvectl", "domain", interface, *tuple(domains or ("",)))
-    return commands.CommandSpec(args, timeout_seconds=15)
+    return commands.CommandSpec(args, timeout_seconds=10)
 
 
 def resolvectl_default_route(interface: str, enabled: bool) -> commands.CommandSpec:
     return commands.CommandSpec(
         ("resolvectl", "default-route", interface, "yes" if enabled else "no"),
-        timeout_seconds=15,
+        timeout_seconds=10,
     )
 
 
@@ -293,7 +293,7 @@ def build_resolvectl_restore_commands(plan: ResolvedDnsPlan) -> list[commands.Co
         resolvectl_dns(plan.interface, plan.dns_servers),
         resolvectl_domain(plan.interface, plan.search_domains),
         resolvectl_default_route(plan.interface, default_route),
-        commands.CommandSpec(("resolvectl", "flush-caches"), timeout_seconds=15),
+        commands.CommandSpec(("resolvectl", "flush-caches"), timeout_seconds=10),
         resolvectl_reset_server_features(),
     ]
 
@@ -327,7 +327,7 @@ def build_resolvectl_apply_commands(
                 resolvectl_default_route(interface, True),
             ]
         )
-    specs.append(commands.CommandSpec(("resolvectl", "flush-caches"), timeout_seconds=15))
+    specs.append(commands.CommandSpec(("resolvectl", "flush-caches"), timeout_seconds=10))
     if reset_server_features:
         specs.append(resolvectl_reset_server_features())
     return specs
@@ -337,8 +337,8 @@ def build_resolvectl_revert_commands(interface: str) -> list[commands.CommandSpe
     if not interface:
         return []
     return [
-        commands.CommandSpec(("resolvectl", "revert", interface), timeout_seconds=15),
-        commands.CommandSpec(("resolvectl", "flush-caches"), timeout_seconds=15),
+        commands.CommandSpec(("resolvectl", "revert", interface), timeout_seconds=10),
+        commands.CommandSpec(("resolvectl", "flush-caches"), timeout_seconds=10),
     ]
 
 
@@ -549,7 +549,7 @@ def revert_resolved_dns(
             )
     else:
         _record_warning(report, "gicipsec0 not present; nothing to clean up.")
-    for spec in [commands.CommandSpec(("resolvectl", "flush-caches"), timeout_seconds=15)]:
+    for spec in [commands.CommandSpec(("resolvectl", "flush-caches"), timeout_seconds=10)]:
         completed = run_command(spec)
         _record_completed(report, spec, completed, phase="rollback")
         if getattr(completed, "returncode", 1) != 0:
@@ -581,7 +581,7 @@ def flush_resolved_dns_caches(
 ) -> list[str]:
     messages: list[str] = []
     for spec in (
-        commands.CommandSpec(("resolvectl", "flush-caches"), timeout_seconds=15),
+        commands.CommandSpec(("resolvectl", "flush-caches"), timeout_seconds=10),
         resolvectl_reset_server_features(),
     ):
         completed = _run_optional_command(spec, run_command=run_command)

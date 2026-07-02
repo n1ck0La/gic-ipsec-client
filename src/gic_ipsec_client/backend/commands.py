@@ -30,6 +30,16 @@ HELPER_FALLBACK_PATHS = (
 )
 POLKIT_POLICY_PATH = Path("/usr/share/polkit-1/actions/com.gicipsec.client.policy")
 POLKIT_EXEC_PATH_KEY = "org.freedesktop.policykit.exec.path"
+STRONGSWAN_SERVICE_CANDIDATES = (
+    "strongswan-starter.service",
+    "strongswan.service",
+    "charon-systemd.service",
+)
+VICI_SOCKET_PATHS = (Path("/run/charon.vici"), Path("/var/run/charon.vici"))
+VICI_UNAVAILABLE_MESSAGE = (
+    "strongSwan is installed but the VICI control socket is not available. "
+    "Start the strongSwan service or install the swanctl/VICI packages."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,7 +103,7 @@ def swanctl_executable() -> str:
 
 
 def swanctl_load_all() -> CommandSpec:
-    return CommandSpec((swanctl_executable(), "--load-all"), timeout_seconds=30)
+    return CommandSpec((swanctl_executable(), "--load-all"), timeout_seconds=20)
 
 
 def swanctl_initiate(child_name: str) -> CommandSpec:
@@ -106,16 +116,16 @@ def swanctl_initiate(child_name: str) -> CommandSpec:
 def swanctl_terminate(connection_name: str) -> CommandSpec:
     return CommandSpec(
         (swanctl_executable(), "--terminate", "--ike", connection_name),
-        timeout_seconds=30,
+        timeout_seconds=20,
     )
 
 
 def swanctl_list_sas() -> CommandSpec:
-    return CommandSpec((swanctl_executable(), "--list-sas"), timeout_seconds=20)
+    return CommandSpec((swanctl_executable(), "--list-sas"), timeout_seconds=15)
 
 
 def swanctl_list_conns() -> CommandSpec:
-    return CommandSpec((swanctl_executable(), "--list-conns"), timeout_seconds=20)
+    return CommandSpec((swanctl_executable(), "--list-conns"), timeout_seconds=15)
 
 
 def rpm_query_file_owner(path: str | Path) -> CommandSpec:
@@ -179,7 +189,19 @@ def helper_installation_diagnostics(
 
 
 def systemctl_is_active(service_name: str) -> CommandSpec:
-    return CommandSpec(("systemctl", "is-active", service_name), timeout_seconds=10)
+    return CommandSpec(("systemctl", "is-active", service_name), timeout_seconds=15)
+
+
+def systemctl_list_unit_file(service_name: str) -> CommandSpec:
+    return CommandSpec(
+        ("systemctl", "list-unit-files", service_name, "--no-legend"),
+        timeout_seconds=15,
+    )
+
+
+def systemctl_start(service_name: str) -> CommandSpec:
+    service = service_name.removesuffix(".service")
+    return CommandSpec(("systemctl", "start", service), timeout_seconds=15)
 
 
 def journalctl_logs(
@@ -192,7 +214,7 @@ def journalctl_logs(
     for unit in units:
         args.extend(["-u", unit])
     args.extend(["--since", since, "-n", str(lines), "--no-pager"])
-    return CommandSpec(tuple(args), timeout_seconds=20)
+    return CommandSpec(tuple(args), timeout_seconds=10)
 
 
 def ip_route() -> CommandSpec:

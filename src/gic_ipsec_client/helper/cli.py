@@ -104,7 +104,6 @@ def main(argv: list[str] | None = None) -> int:
             print(privileged.list_conns())
             return 0
         if args.command == "diagnostics":
-            privileged.ensure_runtime_tools()
             result = privileged.swanctl_diagnostics(
                 profile_id=args.profile_uuid or None,
                 config_root_override=args.config_root,

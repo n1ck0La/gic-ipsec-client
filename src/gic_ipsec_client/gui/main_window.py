@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from uuid import uuid4
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QObject, Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -48,6 +50,21 @@ def _request_dir() -> Path:
     )
 
 
+class BackgroundTask(QObject):
+    finished = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, task: Callable[[], object]) -> None:
+        super().__init__()
+        self._task = task
+
+    def run(self) -> None:
+        try:
+            self.finished.emit(self._task())
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(str(exc))
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -61,6 +78,7 @@ class MainWindow(QMainWindow):
         self.log_viewer = LogViewer()
         self.last_diagnostics = ""
         self.last_helper_output = ""
+        self._background_tasks: list[tuple[QThread, BackgroundTask]] = []
 
         self._build_ui()
         self._load_profiles()
@@ -237,17 +255,30 @@ class MainWindow(QMainWindow):
         if not profile:
             QMessageBox.information(self, "No profile selected", "Select a profile first.")
             return
-        self._run_helper(
-            "delete-profile",
-            "--profile-uuid",
-            profile.id,
-            *self._config_root_args(),
-        )
-        secrets.delete_profile_secrets(profile.id)
-        self.profiles.pop(profile.id, None)
-        self._save_profiles()
-        self._refresh_profile_list()
-        self.log_viewer.append_log(f"Deleted profile {profile.profile_name}.")
+        profile_id = profile.id
+        profile_name = profile.profile_name
+        config_args = self._config_root_args()
+
+        def task() -> object:
+            return self._run_helper_command(
+                "delete-profile",
+                "--profile-uuid",
+                profile_id,
+                *config_args,
+            )
+
+        def finished(result: object) -> None:
+            code, output = self._coerce_helper_result(result)
+            self._record_helper_output(output)
+            if code != 0:
+                return
+            secrets.delete_profile_secrets(profile_id)
+            self.profiles.pop(profile_id, None)
+            self._save_profiles()
+            self._refresh_profile_list()
+            self.log_viewer.append_log(f"Deleted profile {profile_name}.")
+
+        self._run_background_task(task, finished, self._background_helper_failed)
 
     def import_profile(self) -> None:
         file_name, _ = QFileDialog.getOpenFileName(self, "Import profile", "", "JSON (*.json)")
@@ -304,69 +335,131 @@ class MainWindow(QMainWindow):
             return
         self.status_panel.set_status(ConnectionStatus.CONNECTING)
         request_path = self._write_helper_request(profile)
-        render_result = self._run_helper(
-            "render-profile",
-            "--request",
-            str(request_path),
-            *self._config_root_args(),
-        )
-        if render_result != 0:
-            self.status_panel.set_status(ConnectionStatus.FAILED)
-            return
-        connect_result = self._run_helper(
-            "connect-profile",
-            "--profile-uuid",
-            profile.id,
-            *self._config_root_args(),
-        )
-        self.status_panel.set_status(
-            ConnectionStatus.CONNECTED if connect_result == 0 else ConnectionStatus.FAILED
-        )
-        if connect_result == 0:
-            self.disconnect_warning_label.setVisible(False)
+        profile_id = profile.id
+        config_args = self._config_root_args()
+
+        def task() -> object:
+            render_code, render_output = self._run_helper_command(
+                "render-profile",
+                "--request",
+                str(request_path),
+                *config_args,
+            )
+            if render_code != 0:
+                return {
+                    "render_code": render_code,
+                    "render_output": render_output,
+                    "connect_code": 1,
+                    "connect_output": "",
+                }
+            connect_code, connect_output = self._run_helper_command(
+                "connect-profile",
+                "--profile-uuid",
+                profile_id,
+                *config_args,
+            )
+            return {
+                "render_code": render_code,
+                "render_output": render_output,
+                "connect_code": connect_code,
+                "connect_output": connect_output,
+            }
+
+        def finished(result: object) -> None:
+            payload = result if isinstance(result, dict) else {}
+            render_code = int(payload.get("render_code", 1))
+            connect_code = int(payload.get("connect_code", 1))
+            output = "\n".join(
+                part
+                for part in (
+                    str(payload.get("render_output", "") or ""),
+                    str(payload.get("connect_output", "") or ""),
+                )
+                if part
+            )
+            self._record_helper_output(output)
+            failed = render_code != 0 or connect_code != 0
+            self.status_panel.set_status(
+                ConnectionStatus.FAILED if failed else ConnectionStatus.CONNECTED
+            )
+            if not failed:
+                self.disconnect_warning_label.setVisible(False)
+
+        self._run_background_task(task, finished, self._background_helper_failed)
 
     def disconnect_profile(self) -> None:
         profile = self._selected_profile()
         if not profile:
             QMessageBox.information(self, "No profile selected", "Select a profile first.")
             return
-        result = self._run_helper(
-            "disconnect-profile",
-            "--profile-uuid",
-            profile.id,
-            *self._config_root_args(),
-        )
-        self.status_panel.set_status(
-            ConnectionStatus.DISCONNECTED if result == 0 else ConnectionStatus.FAILED
-        )
-        self.disconnect_warning_label.setVisible(
-            result == 0 and "Disconnect completed with warnings" in self.last_helper_output
-        )
-        self.reconnect_button.setVisible(
-            result != 0 and "Reconnect network interface is available" in self.last_helper_output
-        )
+        profile_id = profile.id
+        config_args = self._config_root_args()
+
+        def task() -> object:
+            return self._run_helper_command(
+                "disconnect-profile",
+                "--profile-uuid",
+                profile_id,
+                *config_args,
+            )
+
+        def finished(result: object) -> None:
+            code, output = self._coerce_helper_result(result)
+            self._record_helper_output(output)
+            self.status_panel.set_status(
+                ConnectionStatus.DISCONNECTED if code == 0 else ConnectionStatus.FAILED
+            )
+            self.disconnect_warning_label.setVisible(
+                code == 0 and "Disconnect completed with warnings" in self.last_helper_output
+            )
+            self.reconnect_button.setVisible(
+                code != 0 and "Reconnect network interface is available" in self.last_helper_output
+            )
+
+        self._run_background_task(task, finished, self._background_helper_failed)
 
     def reconnect_network_interface(self) -> None:
         profile = self._selected_profile()
         if not profile:
             QMessageBox.information(self, "No profile selected", "Select a profile first.")
             return
-        result = self._run_helper(
-            "reconnect-network-interface",
-            "--profile-uuid",
-            profile.id,
-        )
-        if result == 0:
-            self.reconnect_button.setVisible(False)
-            self.disconnect_warning_label.setVisible(False)
+        profile_id = profile.id
+
+        def task() -> object:
+            return self._run_helper_command(
+                "reconnect-network-interface",
+                "--profile-uuid",
+                profile_id,
+            )
+
+        def finished(result: object) -> None:
+            code, output = self._coerce_helper_result(result)
+            self._record_helper_output(output)
+            if code == 0:
+                self.reconnect_button.setVisible(False)
+                self.disconnect_warning_label.setVisible(False)
+
+        self._run_background_task(task, finished, self._background_helper_failed)
 
     def run_diagnostics(self) -> None:
-        report = self.backend.collect_diagnostics(
-            profile=self._selected_profile(),
-            config_root_override=self._config_root_override(),
-        )
-        self.last_diagnostics = report.as_text()
-        self.log_viewer.set_log_text(self.last_diagnostics)
+        profile = self._selected_profile()
+        config_root_override = self._config_root_override()
+        self.log_viewer.append_log("Running diagnostics...")
+
+        def task() -> object:
+            return self.backend.collect_diagnostics(
+                profile=profile,
+                config_root_override=config_root_override,
+            )
+
+        def finished(result: object) -> None:
+            if not hasattr(result, "as_text"):
+                self.log_viewer.append_log("Diagnostics failed: invalid report.")
+                return
+            self.last_diagnostics = result.as_text()
+            self.log_viewer.set_log_text(self.last_diagnostics)
+
+        self._run_background_task(task, finished, self._background_diagnostics_failed)
 
     def test_dns(self) -> None:
         self.run_diagnostics()
@@ -375,16 +468,28 @@ class MainWindow(QMainWindow):
         directory = QFileDialog.getExistingDirectory(self, "Export debug bundle")
         if not directory:
             return
-        archive = self.backend.export_debug_bundle(
-            Path(directory),
-            profile=self._selected_profile(),
-            config_root_override=self._config_root_override(),
-        )
-        self.log_viewer.append_log(f"Exported sanitized debug bundle: {archive}")
+        profile = self._selected_profile()
+        config_root_override = self._config_root_override()
+        output_dir = Path(directory)
+        self.log_viewer.append_log("Exporting sanitized debug bundle...")
+
+        def task() -> object:
+            return self.backend.export_debug_bundle(
+                output_dir,
+                profile=profile,
+                config_root_override=config_root_override,
+            )
+
+        def finished(result: object) -> None:
+            self.log_viewer.append_log(f"Exported sanitized debug bundle: {result}")
+
+        self._run_background_task(task, finished, self._background_diagnostics_failed)
 
     def copy_diagnostics_summary(self) -> None:
         if not self.last_diagnostics:
             self.run_diagnostics()
+            self.log_viewer.append_log("Diagnostics are running; copy again when they finish.")
+            return
         QApplication.clipboard().setText(redact_text(self.last_diagnostics))
         self.log_viewer.append_log("Diagnostics summary copied.")
 
@@ -396,6 +501,51 @@ class MainWindow(QMainWindow):
         save_app_settings(self.settings)
         selected = self._config_root_override() or "Automatic"
         self.log_viewer.append_log(f"Settings saved. swanctl config root: {selected}")
+
+    def _run_background_task(
+        self,
+        task: Callable[[], object],
+        on_finished: Callable[[object], None],
+        on_failed: Callable[[str], None],
+    ) -> None:
+        thread = QThread(self)
+        worker = BackgroundTask(task)
+        worker.moveToThread(thread)
+        entry = (thread, worker)
+
+        def cleanup() -> None:
+            if entry in self._background_tasks:
+                self._background_tasks.remove(entry)
+
+        def finished(result: object) -> None:
+            try:
+                on_finished(result)
+            finally:
+                thread.quit()
+
+        def failed(message: str) -> None:
+            try:
+                on_failed(message)
+            finally:
+                thread.quit()
+
+        thread.started.connect(worker.run)
+        worker.finished.connect(finished)
+        worker.failed.connect(failed)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(cleanup)
+        thread.finished.connect(thread.deleteLater)
+        self._background_tasks.append(entry)
+        thread.start()
+
+    def _background_helper_failed(self, message: str) -> None:
+        self.last_helper_output = f"Helper failed: {message}"
+        self.log_viewer.append_log(self.last_helper_output)
+        self.status_panel.set_status(ConnectionStatus.FAILED)
+
+    def _background_diagnostics_failed(self, message: str) -> None:
+        self.log_viewer.append_log(f"Diagnostics failed: {message}")
 
     def _write_helper_request(self, profile: VpnProfile) -> Path:
         request_dir = _request_dir()
@@ -411,23 +561,32 @@ class MainWindow(QMainWindow):
         os.chmod(request_path, 0o600)
         return request_path
 
-    def _run_helper(self, subcommand: str, *args: str) -> int:
+    def _run_helper_command(self, subcommand: str, *args: str) -> tuple[int, str]:
         try:
             command = commands.build_pkexec_helper_command(subcommand, *args)
             completed = commands.run_command(command)
         except FileNotFoundError as exc:
-            self.last_helper_output = str(exc)
-            self.log_viewer.append_log(self.last_helper_output)
-            return 1
-        except (OSError, TimeoutError) as exc:
-            self.last_helper_output = f"Helper failed: {exc}"
-            self.log_viewer.append_log(self.last_helper_output)
-            return 1
+            return 1, str(exc)
+        except (OSError, TimeoutError, subprocess.TimeoutExpired) as exc:
+            return 1, f"Helper failed: {exc}"
         output = "\n".join(part for part in (completed.stdout, completed.stderr) if part)
+        return completed.returncode, output
+
+    def _record_helper_output(self, output: str) -> None:
         self.last_helper_output = output
         if output:
             self.log_viewer.append_log(output)
-        return completed.returncode
+
+    def _coerce_helper_result(self, result: object) -> tuple[int, str]:
+        if not isinstance(result, tuple) or len(result) != 2:
+            return 1, "Helper failed: invalid helper result."
+        code, output = result
+        return int(code), str(output or "")
+
+    def _run_helper(self, subcommand: str, *args: str) -> int:
+        code, output = self._run_helper_command(subcommand, *args)
+        self._record_helper_output(output)
+        return code
 
     def _config_root_override(self) -> str:
         return self.settings.normalized_swanctl_config_root()

@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
 import tempfile
+import time
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -45,6 +47,135 @@ class HelperError(RuntimeError):
 
 
 RUNTIME_PROFILE_ROOT = Path("/run/gic-ipsec-client/profiles")
+VICI_WAIT_ATTEMPTS = 20
+VICI_WAIT_INTERVAL_SECONDS = 0.5
+
+
+def _path_is_socket(path: Path) -> bool:
+    try:
+        return stat.S_ISSOCK(path.stat().st_mode)
+    except OSError:
+        return False
+
+
+def _vici_socket_state(
+    socket_exists: object,
+) -> dict[str, bool]:
+    socket_exists_fn = socket_exists if callable(socket_exists) else _path_is_socket
+    run_socket_exists = bool(socket_exists_fn(commands.VICI_SOCKET_PATHS[0]))
+    var_run_socket_exists = bool(socket_exists_fn(commands.VICI_SOCKET_PATHS[1]))
+    return {
+        "run_charon_vici_exists": run_socket_exists,
+        "var_run_charon_vici_exists": var_run_socket_exists,
+        "vici_socket_available": run_socket_exists or var_run_socket_exists,
+    }
+
+
+def _service_available(
+    service_name: str,
+    *,
+    run_command: object,
+) -> bool:
+    run_command_fn = run_command if callable(run_command) else commands.run_command
+    try:
+        completed = run_command_fn(commands.systemctl_list_unit_file(service_name))
+    except (OSError, TimeoutError, subprocess.TimeoutExpired):
+        return False
+    return service_name in _completed_message(completed)
+
+
+def _service_active_state(
+    service_name: str,
+    *,
+    run_command: object,
+) -> str:
+    run_command_fn = run_command if callable(run_command) else commands.run_command
+    try:
+        completed = run_command_fn(commands.systemctl_is_active(service_name))
+    except (OSError, TimeoutError, subprocess.TimeoutExpired) as exc:
+        return f"unknown: {exc}"
+    output = _completed_message(completed).strip()
+    if output:
+        return output.splitlines()[0].strip()
+    return "active" if completed.returncode == 0 else "inactive"
+
+
+def detect_strongswan_service(
+    *,
+    run_command: object | None = None,
+) -> dict[str, str]:
+    run_command_fn = run_command if callable(run_command) else commands.run_command
+    for service_name in commands.STRONGSWAN_SERVICE_CANDIDATES:
+        if _service_available(service_name, run_command=run_command_fn):
+            return {
+                "detected_strongswan_service": service_name,
+                "strongswan_service_state": _service_active_state(
+                    service_name,
+                    run_command=run_command_fn,
+                ),
+            }
+    return {
+        "detected_strongswan_service": "",
+        "strongswan_service_state": "not found",
+    }
+
+
+def strongswan_preflight(
+    *,
+    raise_on_failure: bool = True,
+    run_command: object | None = None,
+    socket_exists: object | None = None,
+    sleep: object | None = None,
+) -> dict[str, object]:
+    run_command_fn = run_command if callable(run_command) else commands.run_command
+    socket_exists_fn = socket_exists if callable(socket_exists) else _path_is_socket
+    sleep_fn = sleep if callable(sleep) else time.sleep
+    payload: dict[str, object] = {
+        "command_v_swanctl": commands.command_v("swanctl"),
+        "resolved_swanctl_path": commands.resolve_swanctl_path() or "",
+        "started_strongswan_service": False,
+        "systemctl_start_returncode": None,
+        "systemctl_start_output": "",
+        "preflight_error": "",
+    }
+    payload.update(detect_strongswan_service(run_command=run_command_fn))
+    payload.update(_vici_socket_state(socket_exists_fn))
+
+    if not payload["resolved_swanctl_path"]:
+        message = (
+            "swanctl was not found. Install strongSwan packages first. "
+            "Searched PATH, /usr/bin/swanctl, and /usr/sbin/swanctl."
+        )
+        payload["preflight_error"] = message
+        if raise_on_failure:
+            raise HelperError(message)
+        return payload
+
+    if not payload["vici_socket_available"]:
+        service_name = str(payload.get("detected_strongswan_service", "") or "")
+        if service_name:
+            try:
+                start_completed = run_command_fn(commands.systemctl_start(service_name))
+                payload["systemctl_start_returncode"] = start_completed.returncode
+                payload["systemctl_start_output"] = _completed_message(start_completed)
+                payload["started_strongswan_service"] = start_completed.returncode == 0
+            except (OSError, TimeoutError, subprocess.TimeoutExpired) as exc:
+                payload["systemctl_start_output"] = f"systemctl start failed: {exc}"
+            for _ in range(VICI_WAIT_ATTEMPTS):
+                payload.update(_vici_socket_state(socket_exists_fn))
+                if payload["vici_socket_available"]:
+                    break
+                sleep_fn(VICI_WAIT_INTERVAL_SECONDS)
+            payload["strongswan_service_state"] = _service_active_state(
+                service_name,
+                run_command=run_command_fn,
+            )
+
+    if not payload["vici_socket_available"]:
+        payload["preflight_error"] = commands.VICI_UNAVAILABLE_MESSAGE
+        if raise_on_failure:
+            raise HelperError(commands.VICI_UNAVAILABLE_MESSAGE)
+    return payload
 
 
 def request_dir_for_uid(uid: int) -> Path:
@@ -324,8 +455,14 @@ def swanctl_diagnostics(
     layout = detect_swanctl_layout(override=config_root_override)
     resolved_swanctl_path = commands.resolve_swanctl_path() or ""
     swanctl_rpm_owner = _rpm_owner_for_path(resolved_swanctl_path)
-    list_conns_completed = commands.run_command(commands.swanctl_list_conns())
-    list_sas_completed = commands.run_command(commands.swanctl_list_sas())
+    preflight = strongswan_preflight(raise_on_failure=False)
+    if preflight.get("vici_socket_available"):
+        list_conns_completed = commands.run_command(commands.swanctl_list_conns())
+        list_sas_completed = commands.run_command(commands.swanctl_list_sas())
+    else:
+        message = str(preflight.get("preflight_error") or commands.VICI_UNAVAILABLE_MESSAGE)
+        list_conns_completed = _synthetic_completed(commands.swanctl_list_conns().args, message)
+        list_sas_completed = _synthetic_completed(commands.swanctl_list_sas().args, message)
     lo_status_completed = commands.run_command(resolvectl_status_interface(LOOPBACK_DNS_INTERFACE))
     dummy_status_completed = commands.run_command(resolvectl_status_interface(DUMMY_DNS_INTERFACE))
     default_route_completed = commands.run_command(ip_route_get("1.1.1.1"))
@@ -353,6 +490,15 @@ def swanctl_diagnostics(
         "command_v_swanctl": commands.command_v("swanctl"),
         "resolved_swanctl_path": resolved_swanctl_path,
         "swanctl_rpm_owner": swanctl_rpm_owner,
+        "detected_strongswan_service": preflight.get("detected_strongswan_service", ""),
+        "strongswan_service_state": preflight.get("strongswan_service_state", ""),
+        "run_charon_vici_exists": preflight.get("run_charon_vici_exists", False),
+        "var_run_charon_vici_exists": preflight.get("var_run_charon_vici_exists", False),
+        "vici_socket_available": preflight.get("vici_socket_available", False),
+        "started_strongswan_service": preflight.get("started_strongswan_service", False),
+        "systemctl_start_returncode": preflight.get("systemctl_start_returncode"),
+        "systemctl_start_output": preflight.get("systemctl_start_output", ""),
+        "preflight_error": preflight.get("preflight_error", ""),
         "selected_swanctl_config_root": str(layout.root),
         "selection_source": layout.source,
         "uses_secrets_d": layout.use_secrets_dir,
@@ -398,11 +544,7 @@ def helper_uid() -> int:
 
 
 def ensure_runtime_tools() -> None:
-    if not commands.resolve_swanctl_path():
-        raise HelperError(
-            "swanctl was not found. Install strongSwan packages first. "
-            "Searched PATH, /usr/bin/swanctl, and /usr/sbin/swanctl."
-        )
+    strongswan_preflight(raise_on_failure=True)
 
 
 def error_to_message(exc: Exception) -> str:
@@ -426,6 +568,13 @@ def _rpm_owner_for_path(path: str) -> str:
         return "rpm not found"
     completed = commands.run_command(commands.rpm_query_file_owner(path))
     return _completed_message(completed)
+
+
+def _synthetic_completed(
+    args: tuple[str, ...],
+    message: str,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess(args=args, returncode=1, stdout="", stderr=message)
 
 
 def _completed_message(completed: object) -> str:

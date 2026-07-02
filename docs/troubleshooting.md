@@ -20,8 +20,9 @@ nmcli device show
 ## Common Client Checks
 
 - Confirm `swanctl` is installed and can reach the VICI socket.
-- Confirm a strongSwan service such as `charon-systemd` or `strongswan` is
-  active.
+- Confirm a strongSwan service such as `strongswan-starter`, `strongswan`, or
+  `charon-systemd` is active.
+- Confirm `/run/charon.vici` or `/var/run/charon.vici` exists.
 - Confirm the `vici`, `eap-identity`, `eap-mschapv2`, `kernel-netlink`, and DNS
   integration plugins are installed.
 - Run GIC diagnostics and export a sanitized bundle when asking for help.

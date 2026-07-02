@@ -23,12 +23,22 @@ strongswan
 strongswan-swanctl
 libcharon-extauth-plugins
 libcharon-extra-plugins
+libstrongswan-extra-plugins
 polkitd
 policykit-1
 libsecret-1-0
 iproute2
 systemd
 libsecret-tools
+libxcb-cursor0
+libxkbcommon-x11-0
+libxcb-xinerama0
+libxcb-icccm4
+libxcb-image0
+libxcb-keysyms1
+libxcb-render-util0
+libgl1
+libegl1
 "
 
 installable=""

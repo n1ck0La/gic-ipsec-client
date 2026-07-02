@@ -59,6 +59,15 @@ def test_run_command_passes_shell_false(monkeypatch: pytest.MonkeyPatch) -> None
     assert _is_swanctl_command(observed["args"], "--load-all")
 
 
+def test_runtime_command_timeouts_are_bounded() -> None:
+    assert commands.systemctl_is_active("strongswan-starter.service").timeout_seconds == 15
+    assert commands.systemctl_start("strongswan-starter.service").timeout_seconds == 15
+    assert commands.swanctl_load_all().timeout_seconds == 20
+    assert commands.swanctl_initiate("gic-child").timeout_seconds == 60
+    assert commands.swanctl_list_sas().timeout_seconds == 15
+    assert commands.journalctl_logs().timeout_seconds == 10
+
+
 def test_swanctl_resolution_prefers_path_then_fedora_fallback(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

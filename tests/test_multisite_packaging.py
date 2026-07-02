@@ -113,10 +113,20 @@ def test_packaging_layout_targets_requested_paths() -> None:
     assert "- strongswan-swanctl" in deb_section
     assert "- libcharon-extauth-plugins" in deb_section
     assert "- libcharon-extra-plugins" in deb_section
+    assert "- libstrongswan-extra-plugins" in deb_section
     assert "- polkitd | policykit-1" in deb_section
     assert "- libsecret-1-0" in deb_section
     assert "- iproute2" in deb_section
     assert "- systemd" in deb_section
+    assert "- libxcb-cursor0" in deb_section
+    assert "- libxkbcommon-x11-0" in deb_section
+    assert "- libxcb-xinerama0" in deb_section
+    assert "- libxcb-icccm4" in deb_section
+    assert "- libxcb-image0" in deb_section
+    assert "- libxcb-keysyms1" in deb_section
+    assert "- libxcb-render-util0" in deb_section
+    assert "- libgl1" in deb_section
+    assert "- libegl1" in deb_section
     assert "- strongswan" in rpm_section
     assert "- polkit" in rpm_section
     assert "- libsecret" in rpm_section
@@ -220,17 +230,24 @@ def test_ubuntu_package_smoke_workflow_installs_built_deb() -> None:
     assert "bash ./packaging/build-packages.sh" in workflow
     assert "dpkg-deb -I dist/gic-ipsec-client_*.deb | grep Depends" in workflow
     assert "grep -F 'strongswan-swanctl' deb-depends.txt" in workflow
+    assert "grep -F 'libstrongswan-extra-plugins' deb-depends.txt" in workflow
+    assert "grep -F 'libxcb-cursor0' deb-depends.txt" in workflow
+    assert "grep -F 'libxkbcommon-x11-0' deb-depends.txt" in workflow
     assert "! grep -E '(^|[[:space:],])swanctl([[:space:],(]|$)' deb-depends.txt" in workflow
     assert "sudo apt update" in workflow
     assert "sudo apt install -y ./dist/gic-ipsec-client_*.deb" in workflow
     assert "command -v gic-ipsec-client" in workflow
     assert "command -v swanctl" in workflow
-    assert "test -x /usr/lib/gic-ipsec-client/gic-ipsec-helper" in workflow
     assert "test -x /usr/libexec/gic-ipsec-client/gic-ipsec-helper" in workflow
+    assert "dpkg -l | grep -E 'strongswan|swanctl|libxcb-cursor0|libxkbcommon-x11'" in workflow
+    assert "systemctl list-unit-files | grep -Ei 'strongswan|charon' || true" in workflow
     assert "strongswan-swanctl" in ubuntu_deps
     assert "\nswanctl\n" not in ubuntu_deps
     assert "libcharon-extauth-plugins" in ubuntu_deps
     assert "libcharon-extra-plugins" in ubuntu_deps
+    assert "libstrongswan-extra-plugins" in ubuntu_deps
+    assert "libxcb-cursor0" in ubuntu_deps
+    assert "libxkbcommon-x11-0" in ubuntu_deps
     assert "sudo apt install ./gic-ipsec-client_0.1.0_amd64.deb" in readme
     assert "sudo apt -f install" in readme
     assert "sudo dpkg -i" not in readme

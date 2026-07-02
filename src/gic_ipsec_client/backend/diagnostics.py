@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import tarfile
 import tempfile
 from dataclasses import dataclass, field
@@ -247,11 +248,11 @@ def _run_internal_dns_queries(names: list[str], dns_servers: list[str]) -> str:
     outputs: list[str] = []
     for name in names:
         for server in dns_servers:
-            direct_result = _run_optional(dig_short(server, name).args, timeout_seconds=15)
+            direct_result = _run_optional(dig_short(server, name).args, timeout_seconds=10)
             outputs.append(f"$ dig @{server} {name} +short\n{direct_result}")
-        stub_result = _run_optional(dig_short("127.0.0.53", name).args, timeout_seconds=15)
+        stub_result = _run_optional(dig_short("127.0.0.53", name).args, timeout_seconds=10)
         outputs.append(f"$ dig @127.0.0.53 {name} +short\n{stub_result}")
-        result = _run_optional(resolvectl_query(name).args, timeout_seconds=15)
+        result = _run_optional(resolvectl_query(name).args, timeout_seconds=10)
         outputs.append(f"$ resolvectl query {name}\n{result}")
     return "\n\n".join(outputs)
 
@@ -284,10 +285,12 @@ def install_hint(os_release: dict[str, str] | None = None) -> str:
     family = distro_family(os_release)
     if family == "debian":
         return (
-            "Use packaging/ubuntu/install-deps.sh, or install python3, python3-pip, "
-            "python3-venv, strongswan, strongswan-swanctl, libcharon-extauth-plugins, "
-            "libcharon-extra-plugins, polkitd or policykit-1, libsecret-1-0, "
-            "iproute2, and systemd packages."
+            "Use packaging/ubuntu/install-deps.sh, or install strongswan, "
+            "strongswan-swanctl, libcharon-extauth-plugins, libcharon-extra-plugins, "
+            "libstrongswan-extra-plugins, polkitd or policykit-1, libsecret-1-0, "
+            "iproute2, libxcb-cursor0, libxkbcommon-x11-0, libxcb-xinerama0, "
+            "libxcb-icccm4, libxcb-image0, libxcb-keysyms1, libxcb-render-util0, "
+            "libgl1, and libegl1 packages."
         )
     if family == "fedora":
         return (
@@ -305,7 +308,7 @@ def _run_optional(args: tuple[str, ...], *, timeout_seconds: int = 15) -> str:
         return f"{args[0]} not found"
     try:
         completed = run_command(CommandSpec(args, timeout_seconds=timeout_seconds))
-    except (OSError, TimeoutError) as exc:
+    except (OSError, TimeoutError, subprocess.TimeoutExpired) as exc:
         return f"{args[0]} failed: {exc}"
     output = (completed.stdout or "") + (completed.stderr or "")
     return output.strip() or f"{args[0]} exited with {completed.returncode}"
@@ -325,7 +328,7 @@ def _run_helper_diagnostics(
         args.extend(["--config-root", config_root_override])
     try:
         completed = run_command(build_pkexec_helper_command("diagnostics", *args))
-    except (OSError, TimeoutError) as exc:
+    except (OSError, TimeoutError, subprocess.TimeoutExpired) as exc:
         return {"error": f"helper diagnostics failed: {exc}"}
     output = (completed.stdout or "") + (completed.stderr or "")
     if completed.returncode != 0:
@@ -344,11 +347,26 @@ def _format_swanctl_diagnostics(payload: dict[str, Any]) -> str:
 
 
 def _service_summary() -> dict[str, str]:
-    services = ("charon-systemd", "strongswan", "strongswan-starter")
+    services = commands.STRONGSWAN_SERVICE_CANDIDATES
     return {
-        service: _run_optional(("systemctl", "is-active", service), timeout_seconds=5)
+        service: _run_optional(("systemctl", "is-active", service), timeout_seconds=15)
         for service in services
     }
+
+
+def _debian_package_installed(package_name: str) -> bool | None:
+    if not shutil.which("dpkg-query"):
+        return None
+    try:
+        completed = commands.run_command(
+            commands.CommandSpec(
+                ("dpkg-query", "-W", "-f=${Status}", package_name),
+                timeout_seconds=10,
+            )
+        )
+    except (OSError, TimeoutError, subprocess.TimeoutExpired):
+        return False
+    return completed.returncode == 0 and "install ok installed" in (completed.stdout or "")
 
 
 def check_dependencies() -> dict[str, Any]:
@@ -361,6 +379,9 @@ def check_dependencies() -> dict[str, Any]:
         "helper": commands.helper_installation_diagnostics(),
         "pkexec available": bool(shutil.which("pkexec")),
         "services": _service_summary() if shutil.which("systemctl") else {"systemctl": "not found"},
+        "qt_platform_plugin_dependencies": {
+            "libxcb-cursor0_installed": _debian_package_installed("libxcb-cursor0"),
+        },
         "required plugins likely needed": [
             "vici",
             "eap-identity",
@@ -400,9 +421,9 @@ def collect_diagnostics(
             "100",
             "--no-pager",
         ),
-        timeout_seconds=20,
+        timeout_seconds=10,
     )
-    resolved_status_output = _run_optional(resolvectl_status().args, timeout_seconds=15)
+    resolved_status_output = _run_optional(resolvectl_status().args, timeout_seconds=10)
     lo_status_output = str(swanctl_diagnostics.get("resolvectl_status_lo_output", ""))
     dummy_status_output = str(
         swanctl_diagnostics.get("resolvectl_status_gicipsec0_output", "")
@@ -500,6 +521,30 @@ def collect_diagnostics(
         ),
         "generated_connection_loaded": swanctl_diagnostics.get("generated_connection_loaded"),
         "helper_error": swanctl_diagnostics.get("error", ""),
+    }
+    summary["strongswan_service"] = {
+        "detected_strongswan_service": swanctl_diagnostics.get(
+            "detected_strongswan_service",
+            "",
+        ),
+        "strongswan_service_state": swanctl_diagnostics.get(
+            "strongswan_service_state",
+            "",
+        ),
+        "/run/charon.vici exists": swanctl_diagnostics.get(
+            "run_charon_vici_exists",
+            False,
+        ),
+        "/var/run/charon.vici exists": swanctl_diagnostics.get(
+            "var_run_charon_vici_exists",
+            False,
+        ),
+        "vici_socket_available": swanctl_diagnostics.get("vici_socket_available", False),
+        "started_strongswan_service": swanctl_diagnostics.get(
+            "started_strongswan_service",
+            False,
+        ),
+        "preflight_error": swanctl_diagnostics.get("preflight_error", ""),
     }
     if profile is not None:
         summary["profile"] = profile.sanitized_dict(privacy_mode=privacy_mode)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -89,7 +90,7 @@ class StrongSwanBackend:
                     *self._config_root_args(config_root_override),
                 )
             )
-        except FileNotFoundError:
+        except (FileNotFoundError, OSError, TimeoutError, subprocess.TimeoutExpired):
             return ConnectionStatus.FAILED
         output = ((completed.stdout or "") + (completed.stderr or "")).strip()
         if completed.returncode != 0:
@@ -108,7 +109,7 @@ class StrongSwanBackend:
                     *self._config_root_args(config_root_override),
                 )
             )
-        except FileNotFoundError:
+        except (FileNotFoundError, OSError, TimeoutError, subprocess.TimeoutExpired):
             return []
         if completed.returncode != 0:
             return []
@@ -154,7 +155,10 @@ class StrongSwanBackend:
 
     @staticmethod
     def _run(command: commands.CommandSpec, success_message: str) -> BackendResult:
-        completed = commands.run_command(command)
+        try:
+            completed = commands.run_command(command)
+        except (OSError, TimeoutError, subprocess.TimeoutExpired) as exc:
+            return BackendResult(ok=False, message=str(exc), stderr=str(exc))
         output = (completed.stdout or "").strip()
         error = (completed.stderr or "").strip()
         return BackendResult(
