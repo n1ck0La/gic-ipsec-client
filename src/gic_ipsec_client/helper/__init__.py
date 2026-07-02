@@ -1,1 +1,1 @@
-"""Privileged helper package for SEE IPsec Client."""
+"""Privileged helper package for GIC IPsec Client."""

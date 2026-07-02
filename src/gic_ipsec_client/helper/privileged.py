@@ -45,11 +45,11 @@ class HelperError(RuntimeError):
     """User-facing privileged helper error."""
 
 
-RUNTIME_PROFILE_ROOT = Path("/run/see-ipsec-client/profiles")
+RUNTIME_PROFILE_ROOT = Path("/run/gic-ipsec-client/profiles")
 
 
 def request_dir_for_uid(uid: int) -> Path:
-    return Path("/run/user") / str(uid) / "see-ipsec-client" / "helper-requests"
+    return Path("/run/user") / str(uid) / "gic-ipsec-client" / "helper-requests"
 
 
 def validate_request_path(path: Path, *, uid: int) -> Path:
@@ -371,8 +371,8 @@ def swanctl_diagnostics(
         "ip_route_get_1_1_1_1_output": _completed_message(default_route_completed),
         "resolvectl_status_lo_returncode": lo_status_completed.returncode,
         "resolvectl_status_lo_output": _completed_message(lo_status_completed),
-        "resolvectl_status_seeipsec0_returncode": dummy_status_completed.returncode,
-        "resolvectl_status_seeipsec0_output": _completed_message(dummy_status_completed),
+        "resolvectl_status_gicipsec0_returncode": dummy_status_completed.returncode,
+        "resolvectl_status_gicipsec0_output": _completed_message(dummy_status_completed),
         "resolvectl_status_default_interface_returncode": default_status_completed.returncode
         if default_status_completed
         else -1,

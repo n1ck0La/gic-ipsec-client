@@ -18,6 +18,12 @@ def test_runtime_sources_do_not_contain_site_specific_defaults() -> None:
         "192.168.88.0/24",
         "ens18",
         "m.yaroshenko",
+        "see-ipsec-client",
+        "see-ipsec-helper",
+        "see-ipsec-",
+        "SEE IPsec",
+        "com.see.ipsecclient",
+        "seeipsec0",
     }
     scanned_roots = [
         ROOT / "src",
@@ -86,29 +92,29 @@ def test_fortigate_preset_is_site_neutral() -> None:
 def test_packaging_layout_targets_requested_paths() -> None:
     nfpm = (ROOT / "packaging" / "nfpm.yaml").read_text(encoding="utf-8")
 
-    assert "name: see-ipsec-client" in nfpm
-    assert "dst: /opt/see-ipsec-client/app" in nfpm
-    assert "dst: /opt/see-ipsec-client/venv" in nfpm
-    assert "dst: /usr/bin/see-ipsec-client" in nfpm
-    assert "dst: /usr/libexec/see-ipsec-client/see-ipsec-helper" in nfpm
-    assert "dst: /usr/share/icons/hicolor/scalable/apps/see-ipsec-client.svg" in nfpm
-    assert "dst: /usr/share/polkit-1/actions/com.see.ipsecclient.policy" in nfpm
-    assert "dst: /etc/see-ipsec-client/defaults.json" in nfpm
+    assert "name: gic-ipsec-client" in nfpm
+    assert "dst: /opt/gic-ipsec-client/app" in nfpm
+    assert "dst: /opt/gic-ipsec-client/venv" in nfpm
+    assert "dst: /usr/bin/gic-ipsec-client" in nfpm
+    assert "dst: /usr/libexec/gic-ipsec-client/gic-ipsec-helper" in nfpm
+    assert "dst: /usr/share/icons/hicolor/scalable/apps/gic-ipsec-client.svg" in nfpm
+    assert "dst: /usr/share/polkit-1/actions/com.gicipsec.client.policy" in nfpm
+    assert "dst: /etc/gic-ipsec-client/defaults.json" in nfpm
     assert "strongswan-swanctl" in nfpm
     assert "swanctl" in nfpm
 
-    client_wrapper = ROOT / "packaging" / "bin" / "see-ipsec-client"
-    helper_wrapper = ROOT / "packaging" / "libexec" / "see-ipsec-helper"
-    policy = (ROOT / "packaging" / "polkit" / "com.see.ipsecclient.policy").read_text(
+    client_wrapper = ROOT / "packaging" / "bin" / "gic-ipsec-client"
+    helper_wrapper = ROOT / "packaging" / "libexec" / "gic-ipsec-helper"
+    policy = (ROOT / "packaging" / "polkit" / "com.gicipsec.client.policy").read_text(
         encoding="utf-8"
     )
 
     assert os.access(client_wrapper, os.X_OK)
     assert os.access(helper_wrapper, os.X_OK)
-    assert "/opt/see-ipsec-client/venv/bin/see-ipsec-client" in client_wrapper.read_text(
+    assert "/opt/gic-ipsec-client/venv/bin/gic-ipsec-client" in client_wrapper.read_text(
         encoding="utf-8"
     )
-    assert "/opt/see-ipsec-client/venv/bin/see-ipsec-helper" in helper_wrapper.read_text(
+    assert "/opt/gic-ipsec-client/venv/bin/gic-ipsec-helper" in helper_wrapper.read_text(
         encoding="utf-8"
     )
-    assert "/usr/libexec/see-ipsec-client/see-ipsec-helper" in policy
+    assert "/usr/libexec/gic-ipsec-client/gic-ipsec-helper" in policy

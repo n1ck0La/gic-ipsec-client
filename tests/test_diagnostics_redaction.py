@@ -176,7 +176,7 @@ def test_diagnostics_warns_when_dummy_dns_is_ignored_by_resolved() -> None:
         dns_search_domains=["corp.example"],
     )
     dummy_status = """
-    Link 99 (seeipsec0)
+    Link 99 (gicipsec0)
         DNS Servers: 10.88.0.53
         DNS Domain: ~corp.example
     """

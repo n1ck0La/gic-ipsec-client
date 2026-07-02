@@ -43,4 +43,4 @@ echo
 echo "Install command:"
 echo "  sudo dnf install$installable"
 echo
-echo "NetworkManager-libreswan is optional fallback tooling, not SEE IPsec Client's primary backend."
+echo "NetworkManager-libreswan is optional fallback tooling, not GIC IPsec Client's primary backend."

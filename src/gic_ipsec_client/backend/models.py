@@ -18,7 +18,7 @@ DnsStrategy: TypeAlias = Literal[
 ]
 ConfigRootMode: TypeAlias = Literal["auto", "/etc/swanctl", "/etc/strongswan/swanctl"]
 
-CONNECTION_PREFIX = "see-ipsec-"
+CONNECTION_PREFIX = "gic-"
 LEGACY_CONNECTION_PREFIX = "gic-"
 
 DEFAULT_IKE_PROPOSALS = (
@@ -89,7 +89,7 @@ class PlatformProfile:
 
 @dataclass(slots=True)
 class VpnProfile:
-    """SEE IPsec profile with nested persisted schema and legacy flat accessors."""
+    """GIC IPsec profile with nested persisted schema and legacy flat accessors."""
 
     id: str = field(default_factory=lambda: str(uuid4()))
     name: str = ""

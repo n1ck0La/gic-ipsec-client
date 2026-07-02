@@ -20,6 +20,6 @@ if ! command -v nfpm >/dev/null 2>&1; then
 fi
 
 VERSION="$VERSION" nfpm pkg --config packaging/nfpm.yaml --packager deb \
-  --target "dist/see-ipsec-client_${VERSION}_amd64.deb"
+  --target "dist/gic-ipsec-client_${VERSION}_amd64.deb"
 VERSION="$VERSION" nfpm pkg --config packaging/nfpm.yaml --packager rpm \
-  --target "dist/see-ipsec-client-${VERSION}-1.x86_64.rpm"
+  --target "dist/gic-ipsec-client-${VERSION}-1.x86_64.rpm"

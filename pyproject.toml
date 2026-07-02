@@ -3,13 +3,13 @@ requires = ["hatchling>=1.25"]
 build-backend = "hatchling.build"
 
 [project]
-name = "see-ipsec-client"
+name = "gic-ipsec-client"
 version = "0.1.0"
-description = "SEE IPsec Client, a strongSwan-backed Linux desktop IPsec/IKEv2 client"
+description = "GIC IPsec Client, a strongSwan-backed Linux desktop IPsec/IKEv2 client"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-authors = [{ name = "SEE IPsec Client contributors" }]
+authors = [{ name = "GIC IPsec Client contributors" }]
 dependencies = [
   "PySide6>=6.6",
   "keyring>=25.0",
@@ -23,8 +23,8 @@ dev = [
 ]
 
 [project.scripts]
-see-ipsec-client = "gic_ipsec_client.main:main"
-see-ipsec-helper = "gic_ipsec_client.helper.cli:main"
+gic-ipsec-client = "gic_ipsec_client.main:main"
+gic-ipsec-helper = "gic_ipsec_client.helper.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/gic_ipsec_client"]

@@ -1,0 +1,6 @@
+[Unit]
+Description=GIC IPsec helper example
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/gic-ipsec-client/gic-ipsec-helper --help

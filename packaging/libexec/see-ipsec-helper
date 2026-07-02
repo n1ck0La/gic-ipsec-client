@@ -1,2 +1,0 @@
-#!/usr/bin/env sh
-exec /opt/see-ipsec-client/venv/bin/see-ipsec-helper "$@"

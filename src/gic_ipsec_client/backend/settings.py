@@ -9,7 +9,7 @@ from gic_ipsec_client.backend.swanctl_paths import normalize_config_root_overrid
 
 
 def config_dir() -> Path:
-    return Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "see-ipsec-client"
+    return Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "gic-ipsec-client"
 
 
 @dataclass(slots=True)

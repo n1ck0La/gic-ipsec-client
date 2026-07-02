@@ -39,19 +39,19 @@ from gic_ipsec_client.gui.status_panel import StatusPanel
 
 
 def _config_dir() -> Path:
-    return Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "see-ipsec-client"
+    return Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "gic-ipsec-client"
 
 
 def _request_dir() -> Path:
     return Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / (
-        "see-ipsec-client/helper-requests"
+        "gic-ipsec-client/helper-requests"
     )
 
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("SEE IPsec Client")
+        self.setWindowTitle("GIC IPsec Client")
         self.resize(980, 620)
         self.backend = StrongSwanBackend()
         self.settings = load_app_settings()

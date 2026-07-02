@@ -1,1 +1,1 @@
-"""Qt GUI package for SEE IPsec Client."""
+"""Qt GUI package for GIC IPsec Client."""

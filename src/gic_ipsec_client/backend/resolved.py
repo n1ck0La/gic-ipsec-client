@@ -11,8 +11,8 @@ from gic_ipsec_client.backend import commands
 from gic_ipsec_client.backend.validators import validate_uuid
 
 LOOPBACK_DNS_INTERFACE = "lo"
-DUMMY_DNS_INTERFACE = "seeipsec0"
-RESOLVED_STATE_ROOT = Path("/run/see-ipsec-client")
+DUMMY_DNS_INTERFACE = "gicipsec0"
+RESOLVED_STATE_ROOT = Path("/run/gic-ipsec-client")
 RunCommand = Callable[[commands.CommandSpec], object]
 
 
@@ -548,7 +548,7 @@ def revert_resolved_dns(
                 _completed_message(delete_dummy) or f"{' '.join(delete_spec.args)} failed.",
             )
     else:
-        _record_warning(report, "seeipsec0 not present; nothing to clean up.")
+        _record_warning(report, "gicipsec0 not present; nothing to clean up.")
     for spec in [commands.CommandSpec(("resolvectl", "flush-caches"), timeout_seconds=15)]:
         completed = run_command(spec)
         _record_completed(report, spec, completed, phase="rollback")

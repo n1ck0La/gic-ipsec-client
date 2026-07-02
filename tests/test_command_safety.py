@@ -15,8 +15,8 @@ from gic_ipsec_client.backend.validators import ProfileValidationError
 def test_commands_are_argument_arrays_without_shell() -> None:
     specs = [
         commands.swanctl_load_all(),
-        commands.swanctl_initiate("see-ipsec-child"),
-        commands.swanctl_terminate("see-ipsec-conn"),
+        commands.swanctl_initiate("gic-child"),
+        commands.swanctl_terminate("gic-conn"),
         commands.swanctl_list_sas(),
         commands.swanctl_list_conns(),
         commands.journalctl_logs(),

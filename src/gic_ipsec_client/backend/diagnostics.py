@@ -48,7 +48,7 @@ DNS_SERVER_MISSING_HINT = (
     "DNS server is configured but systemd-resolved does not show it."
 )
 DNS_QUERY_WRONG_LINK_HINT = (
-    "Internal DNS query appears to use a physical link instead of lo/seeipsec0."
+    "Internal DNS query appears to use a physical link instead of lo/gicipsec0."
 )
 DUMMY_DNS_IGNORED_HINT = (
     "systemd-resolved ignored the dummy VPN DNS link. Applying DNS to the physical "
@@ -67,7 +67,7 @@ class DiagnosticReport:
     sections: dict[str, str] = field(default_factory=dict)
 
     def as_text(self) -> str:
-        parts = ["SEE IPsec diagnostics", json.dumps(self.summary, indent=2, sort_keys=True)]
+        parts = ["GIC IPsec diagnostics", json.dumps(self.summary, indent=2, sort_keys=True)]
         for name, content in self.sections.items():
             parts.extend([f"\n## {name}", content.strip()])
         return "\n".join(parts).strip() + "\n"
@@ -398,7 +398,7 @@ def collect_diagnostics(
     resolved_status_output = _run_optional(resolvectl_status().args, timeout_seconds=15)
     lo_status_output = str(swanctl_diagnostics.get("resolvectl_status_lo_output", ""))
     dummy_status_output = str(
-        swanctl_diagnostics.get("resolvectl_status_seeipsec0_output", "")
+        swanctl_diagnostics.get("resolvectl_status_gicipsec0_output", "")
     )
     default_interface = str(swanctl_diagnostics.get("default_dns_interface", "") or "")
     default_status_output = str(
@@ -437,7 +437,7 @@ def collect_diagnostics(
         "ip_route_get_8_8_8_8": _run_optional(ip_route_get("8.8.8.8").args, timeout_seconds=10),
         "resolvectl_status": resolved_status_output,
         "resolvectl_status_lo": lo_status_output,
-        "resolvectl_status_seeipsec0": dummy_status_output,
+        "resolvectl_status_gicipsec0": dummy_status_output,
         "resolvectl_status_default_interface": default_status_output,
         "dns_apply_report": json.dumps(dns_apply_report, indent=2, sort_keys=True),
         "dns_state_snapshot": json.dumps(
@@ -510,7 +510,7 @@ def export_debug_bundle(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     fd, archive_name = tempfile.mkstemp(
-        prefix="see-ipsec-debug-",
+        prefix="gic-debug-",
         suffix=".tar.gz",
         dir=output_dir,
     )
@@ -530,7 +530,7 @@ def export_debug_bundle(
     )
     rendered = render_sanitized_bundle_config(profile, privacy_mode=privacy_mode) if profile else ""
 
-    with tempfile.TemporaryDirectory(prefix="see-ipsec-debug-src-") as tmp_name:
+    with tempfile.TemporaryDirectory(prefix="gic-debug-src-") as tmp_name:
         tmp = Path(tmp_name)
         files = {
             "app-version.txt": f"{__version__}\n",
@@ -550,8 +550,8 @@ def export_debug_bundle(
             "ip-route-get-8.8.8.8.txt": report.sections.get("ip_route_get_8_8_8_8", "") + "\n",
             "resolvectl-status.txt": report.sections.get("resolvectl_status", "") + "\n",
             "resolvectl-status-lo.txt": report.sections.get("resolvectl_status_lo", "") + "\n",
-            "resolvectl-status-seeipsec0.txt": report.sections.get(
-                "resolvectl_status_seeipsec0",
+            "resolvectl-status-gicipsec0.txt": report.sections.get(
+                "resolvectl_status_gicipsec0",
                 "",
             )
             + "\n",

@@ -1,6 +1,0 @@
-[Unit]
-Description=SEE IPsec helper example
-
-[Service]
-Type=oneshot
-ExecStart=/usr/libexec/see-ipsec-client/see-ipsec-helper --help

@@ -1,6 +1,6 @@
 # FortiGate Profile
 
-SEE IPsec Client supports FortiGate IKEv2 remote access with:
+GIC IPsec Client supports FortiGate IKEv2 remote access with:
 
 - FortiGate/gateway authentication by PSK.
 - User authentication by EAP-MSCHAPv2 username/password.
@@ -19,18 +19,18 @@ Replace placeholders before use.
 
 ```text
 config firewall address
-    edit "SEE-VPN-CLIENT-RANGE"
+    edit "GIC-VPN-CLIENT-RANGE"
         set type iprange
         set start-ip <VPN_POOL_START>
         set end-ip <VPN_POOL_END>
     next
-    edit "SEE-LAN"
+    edit "GIC-LAN"
         set subnet <LAN_SUBNET> <LAN_MASK>
     next
 end
 
 config user group
-    edit "SEE-VPN-USERS"
+    edit "GIC-VPN-USERS"
         set member <LOCAL_OR_REMOTE_USERS_OR_GROUPS>
     next
 end
@@ -47,12 +47,12 @@ config vpn ipsec phase1-interface
         set dhgrp 14 19 20
         set eap enable
         set eap-identity send-request
-        set authusrgrp "SEE-VPN-USERS"
+        set authusrgrp "GIC-VPN-USERS"
         set transport udp
         set assign-ip-from name
-        set ipv4-name "SEE-VPN-CLIENT-RANGE"
+        set ipv4-name "GIC-VPN-CLIENT-RANGE"
         set dns-mode auto
-        set ipv4-split-include "SEE-LAN"
+        set ipv4-split-include "GIC-LAN"
         set psksecret <REPLACE_WITH_STRONG_PSK>
     next
 end
@@ -66,12 +66,12 @@ end
 
 config firewall policy
     edit 0
-        set name "SEE Linux IPsec to LAN"
+        set name "GIC Linux IPsec to LAN"
         set srcintf "see-linux-ikev2"
         set dstintf "<LAN_INTERFACE>"
         set action accept
-        set srcaddr "SEE-VPN-CLIENT-RANGE"
-        set dstaddr "SEE-LAN"
+        set srcaddr "GIC-VPN-CLIENT-RANGE"
+        set dstaddr "GIC-LAN"
         set schedule "always"
         set service "ALL"
         set logtraffic all
@@ -84,7 +84,7 @@ end
 - `gateway_fqdn_or_ip`: public FortiGate address.
 - `Strict remote ID`: optional. Leave empty for the FortiGate PSK+EAP default,
   which renders `remote.id=%any` and IKE secret `id-1/id-2=%any`.
-- `username` and `eap_identity`: the user allowed by `SEE-VPN-USERS`.
+- `username` and `eap_identity`: the user allowed by `GIC-VPN-USERS`.
 - `psk`: the FortiGate `psksecret`.
 - `ike_proposals`: keep the default FortiGate-compatible values first.
 - `esp_proposals`: keep the default FortiGate-compatible values first.

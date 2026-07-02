@@ -196,7 +196,7 @@ def test_split_dns_falls_back_to_physical_interface_when_lo_query_uses_wan0(
     )
 
     assert errors == []
-    assert ("ip", "link", "add", "seeipsec0", "type", "dummy") not in calls
+    assert ("ip", "link", "add", "gicipsec0", "type", "dummy") not in calls
     assert ("resolvectl", "dns", DUMMY_DNS_INTERFACE, "10.88.0.53") not in calls
     assert ("ip", "route", "get", "1.1.1.1") in calls
     assert ("resolvectl", "dns", "wan0", "10.88.0.53") in calls
@@ -329,7 +329,7 @@ def test_disconnect_reverts_lo_for_split_dns(tmp_path: Path) -> None:
 
     def fake_run(spec: commands.CommandSpec) -> Completed:
         calls.append(spec.args)
-        if spec.args == ("ip", "link", "show", "seeipsec0"):
+        if spec.args == ("ip", "link", "show", "gicipsec0"):
             return MissingCompleted()
         return Completed()
 
@@ -337,11 +337,11 @@ def test_disconnect_reverts_lo_for_split_dns(tmp_path: Path) -> None:
 
     assert errors == []
     report = load_dns_apply_report(profile_id, state_root=tmp_path)
-    assert "seeipsec0 not present; nothing to clean up." in report["warnings"]
+    assert "gicipsec0 not present; nothing to clean up." in report["warnings"]
     assert calls == [
         ("resolvectl", "revert", "lo"),
-        ("resolvectl", "revert", "seeipsec0"),
-        ("ip", "link", "show", "seeipsec0"),
+        ("resolvectl", "revert", "gicipsec0"),
+        ("ip", "link", "show", "gicipsec0"),
         ("resolvectl", "flush-caches"),
         ("resolvectl", "reset-server-features"),
     ]
@@ -377,10 +377,10 @@ def test_cleanup_revert_failure_is_warning_when_explicit_restore_succeeds(
     def fake_run(spec: commands.CommandSpec) -> Completed:
         if spec.args in {
             ("resolvectl", "revert", "lo"),
-            ("resolvectl", "revert", "seeipsec0"),
+            ("resolvectl", "revert", "gicipsec0"),
         }:
             return FailedRevertCompleted()
-        if spec.args == ("ip", "link", "show", "seeipsec0"):
+        if spec.args == ("ip", "link", "show", "gicipsec0"):
             return MissingCompleted()
         return Completed()
 
@@ -389,7 +389,7 @@ def test_cleanup_revert_failure_is_warning_when_explicit_restore_succeeds(
     assert errors == []
     warnings = load_dns_apply_report(profile_id, state_root=tmp_path)["warnings"]
     assert any("org.freedesktop.network1" in warning for warning in warnings)
-    assert "seeipsec0 not present; nothing to clean up." in warnings
+    assert "gicipsec0 not present; nothing to clean up." in warnings
 
 
 def test_disconnect_reverts_saved_physical_dns_interface(tmp_path: Path) -> None:
@@ -413,7 +413,7 @@ def test_disconnect_reverts_saved_physical_dns_interface(tmp_path: Path) -> None
 
     def fake_run(spec: commands.CommandSpec) -> Completed:
         calls.append(spec.args)
-        if spec.args == ("ip", "link", "show", "seeipsec0"):
+        if spec.args == ("ip", "link", "show", "gicipsec0"):
             return MissingCompleted()
         return Completed()
 
@@ -427,8 +427,8 @@ def test_disconnect_reverts_saved_physical_dns_interface(tmp_path: Path) -> None
         ("resolvectl", "flush-caches"),
         ("resolvectl", "reset-server-features"),
         ("resolvectl", "revert", "lo"),
-        ("resolvectl", "revert", "seeipsec0"),
-        ("ip", "link", "show", "seeipsec0"),
+        ("resolvectl", "revert", "gicipsec0"),
+        ("ip", "link", "show", "gicipsec0"),
         ("resolvectl", "flush-caches"),
         ("resolvectl", "reset-server-features"),
     ]
@@ -464,7 +464,7 @@ def test_disconnect_reapply_fallback_handles_resolvectl_restore_failure(tmp_path
         calls.append(spec.args)
         if spec.args == ("resolvectl", "dns", "wan0", "9.9.9.9", "8.8.8.8"):
             return FailedCompleted()
-        if spec.args == ("ip", "link", "show", "seeipsec0"):
+        if spec.args == ("ip", "link", "show", "gicipsec0"):
             return MissingCompleted()
         return Completed()
 
@@ -554,7 +554,7 @@ def test_disconnect_deletes_dummy_interface_when_present(tmp_path: Path) -> None
     errors = revert_resolved_dns(profile_id, run_command=fake_run, state_root=tmp_path)
 
     assert errors == []
-    assert ("ip", "link", "delete", "seeipsec0") in calls
+    assert ("ip", "link", "delete", "gicipsec0") in calls
     assert ("resolvectl", "reset-server-features") in calls
 
 
@@ -563,17 +563,17 @@ def test_missing_dummy_interface_is_warning_not_error(tmp_path: Path) -> None:
 
     class MissingCompleted(Completed):
         returncode = 1
-        stderr = 'Failed to resolve interface "seeipsec0": No such device'
+        stderr = 'Failed to resolve interface "gicipsec0": No such device'
 
     def fake_run(spec: commands.CommandSpec) -> Completed:
-        if spec.args == ("ip", "link", "show", "seeipsec0"):
+        if spec.args == ("ip", "link", "show", "gicipsec0"):
             return MissingCompleted()
         return Completed()
 
     errors = revert_resolved_dns(profile_id, run_command=fake_run, state_root=tmp_path)
 
     assert errors == []
-    assert "seeipsec0 not present; nothing to clean up." in load_dns_apply_report(
+    assert "gicipsec0 not present; nothing to clean up." in load_dns_apply_report(
         profile_id,
         state_root=tmp_path,
     )["warnings"]

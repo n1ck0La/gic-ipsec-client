@@ -75,8 +75,8 @@ def test_swanctl_secret_renderer_creates_psk_and_eap_sections() -> None:
     rendered = render_secret_config(valid_profile())
 
     assert "secrets {" in rendered
-    assert "ike-see-ipsec-00000000-0000-4000-8000-000000000001" in rendered
-    assert "eap-see-ipsec-00000000-0000-4000-8000-000000000001" in rendered
+    assert "ike-gic-00000000-0000-4000-8000-000000000001" in rendered
+    assert "eap-gic-00000000-0000-4000-8000-000000000001" in rendered
     assert "id-2 = %any" in rendered
     assert 'secret = "do-not-leak-psk"' in rendered
     assert 'secret = "do-not-leak-password"' in rendered
@@ -96,7 +96,7 @@ def test_render_profile_files_uses_uuid_paths() -> None:
     layout = SwanctlLayout(root=FEDORA_SWANCTL_ROOT, source="test")
     rendered = render_profile_files(profile, layout=layout)
 
-    assert rendered.config_path.name == f"see-ipsec-{profile.id}.conf"
+    assert rendered.config_path.name == f"gic-{profile.id}.conf"
     assert rendered.secrets_path is None
 
 
@@ -116,7 +116,7 @@ def test_fedora_renderer_creates_one_flat_config_with_secrets() -> None:
     rendered = render_profile_files(profile, layout=layout)
 
     assert rendered.config_path == FEDORA_SWANCTL_ROOT / "conf.d" / (
-        f"see-ipsec-{profile.id}.conf"
+        f"gic-{profile.id}.conf"
     )
     assert rendered.secrets_path is None
     assert "connections {" in rendered.config_text
@@ -131,7 +131,6 @@ def test_fedora_renderer_does_not_use_nested_gic_ipsec_path() -> None:
     rendered = render_profile_files(profile, layout=layout)
 
     assert "conf.d/gic-ipsec" not in rendered.config_path.as_posix()
-    assert "conf.d/see-ipsec/" not in rendered.config_path.as_posix()
 
 
 def test_fortigate_preset_uses_eap_identity_and_any_psk_ids() -> None:

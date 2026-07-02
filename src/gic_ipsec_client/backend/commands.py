@@ -98,7 +98,7 @@ def nmcli_device_show() -> CommandSpec:
 
 
 def build_pkexec_helper_command(subcommand: str, *args: str) -> CommandSpec:
-    return CommandSpec(("pkexec", "see-ipsec-helper", subcommand, *args), timeout_seconds=120)
+    return CommandSpec(("pkexec", "gic-ipsec-helper", subcommand, *args), timeout_seconds=120)
 
 
 def profile_paths(
@@ -132,7 +132,7 @@ def delete_profile_files(
     config_root_override: str | Path | None = None,
     all_known_roots: bool = False,
 ) -> list[Path]:
-    """Delete only the UUID-named files SEE IPsec owns below configured swanctl roots."""
+    """Delete only the UUID-named files GIC IPsec owns below configured swanctl roots."""
 
     validate_uuid(profile_id)
     layouts = (

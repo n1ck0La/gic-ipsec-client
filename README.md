@@ -1,6 +1,6 @@
-# SEE IPsec Client
+# GIC IPsec Client
 
-SEE IPsec Client is a Linux desktop VPN client for multiple IKEv2 remote-access
+GIC IPsec Client is a Linux desktop VPN client for multiple IKEv2 remote-access
 profiles. It uses the system strongSwan `swanctl`/VICI backend and delegates
 root-only operations to a small `pkexec` helper.
 
@@ -39,7 +39,7 @@ python -m gic_ipsec_client
 Run the helper:
 
 ```bash
-see-ipsec-helper --help
+gic-ipsec-helper --help
 ```
 
 ## Packaging
@@ -52,16 +52,16 @@ Install nfpm, then run:
 
 Expected outputs:
 
-- `dist/see-ipsec-client_<version>_amd64.deb`
-- `dist/see-ipsec-client-<version>-1.x86_64.rpm`
+- `dist/gic-ipsec-client_<version>_amd64.deb`
+- `dist/gic-ipsec-client-<version>-1.x86_64.rpm`
 
 The package layout installs:
 
-- `/opt/see-ipsec-client/app`
-- `/opt/see-ipsec-client/venv`
-- `/usr/bin/see-ipsec-client`
-- `/usr/libexec/see-ipsec-client/see-ipsec-helper`
-- `/usr/share/applications/see-ipsec-client.desktop`
-- `/usr/share/icons/hicolor/256x256/apps/see-ipsec-client.png`
-- `/usr/share/polkit-1/actions/com.see.ipsecclient.policy`
-- `/etc/see-ipsec-client/defaults.json`
+- `/opt/gic-ipsec-client/app`
+- `/opt/gic-ipsec-client/venv`
+- `/usr/bin/gic-ipsec-client`
+- `/usr/libexec/gic-ipsec-client/gic-ipsec-helper`
+- `/usr/share/applications/gic-ipsec-client.desktop`
+- `/usr/share/icons/hicolor/scalable/apps/gic-ipsec-client.svg`
+- `/usr/share/polkit-1/actions/com.gicipsec.client.policy`
+- `/etc/gic-ipsec-client/defaults.json`
