@@ -90,6 +90,12 @@ If you already tried installing with `dpkg -i`, repair dependencies with:
 sudo apt -f install
 ```
 
+Install the local Fedora package with `dnf` so package dependencies are resolved:
+
+```bash
+sudo dnf install ./gic-ipsec-client-0.1.0-1.x86_64.rpm
+```
+
 The package layout installs:
 
 - `/opt/gic-ipsec-client/app`

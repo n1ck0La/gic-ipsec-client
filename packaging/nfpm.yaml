@@ -45,9 +45,7 @@ overrides:
   rpm:
     depends:
       - strongswan
-      - python3
       - polkit
-      - NetworkManager
-      - systemd-resolved
+      - libsecret
       - iproute
-      - bind-utils
+      - systemd-resolved

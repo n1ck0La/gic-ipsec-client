@@ -118,15 +118,24 @@ def test_packaging_layout_targets_requested_paths() -> None:
     assert "- iproute2" in deb_section
     assert "- systemd" in deb_section
     assert "- strongswan" in rpm_section
+    assert "- polkit" in rpm_section
+    assert "- libsecret" in rpm_section
+    assert "- iproute" in rpm_section
+    assert "- systemd-resolved" in rpm_section
+    assert "- python3" not in rpm_section
+    assert "- NetworkManager" not in rpm_section
+    assert "- bind-utils" not in rpm_section
     assert "Requires: strongswan" in fedora_spec
+    assert "Requires: polkit" in fedora_spec
+    assert "Requires: libsecret" in fedora_spec
+    assert "Requires: iproute" in fedora_spec
+    assert "Requires: systemd-resolved" in fedora_spec
     assert "Requires: /usr/sbin/swanctl" not in fedora_spec
     assert "Requires: /usr/bin/swanctl" not in fedora_spec
-    assert "- python3" in rpm_section
-    assert "- polkit" in rpm_section
-    assert "- NetworkManager" in rpm_section
-    assert "- systemd-resolved" in rpm_section
-    assert "- iproute" in rpm_section
-    assert "- bind-utils" in rpm_section
+    assert "Requires: swanctl" not in fedora_spec
+    assert "Requires: python3" not in fedora_spec
+    assert "Requires: NetworkManager" not in fedora_spec
+    assert "Requires: bind-utils" not in fedora_spec
 
     client_wrapper = ROOT / "packaging" / "bin" / "gic-ipsec-client"
     helper_wrapper = ROOT / "packaging" / "libexec" / "gic-ipsec-helper"
@@ -157,12 +166,10 @@ def test_fedora_package_smoke_workflow_installs_built_rpm() -> None:
     workflow = (ROOT / ".github" / "workflows" / "fedora-rpm-package.yml").read_text(
         encoding="utf-8"
     )
-    provider_script = (
-        ROOT / "packaging" / "fedora" / "validate-swanctl-provider.sh"
-    ).read_text(encoding="utf-8")
     fedora_deps = (ROOT / "packaging" / "fedora" / "install-deps.sh").read_text(
         encoding="utf-8"
     )
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
     assert "image: fedora:latest" in workflow
     assert "build-rpm:" in workflow
@@ -171,19 +178,28 @@ def test_fedora_package_smoke_workflow_installs_built_rpm() -> None:
     assert "actions/upload-artifact@v4" in workflow
     assert "actions/download-artifact@v4" in workflow
     assert "bash ./packaging/build-packages.sh" in workflow
-    assert "dnf -y install strongswan polkit libsecret" in workflow
-    assert "dnf -y install ./dist/gic-ipsec-client-*-1.x86_64.rpm" in workflow
-    assert "rpm -qpR dist/gic-ipsec-client-*.rpm" in workflow
-    assert "grep -F 'strongswan' rpm-requires.txt" in workflow
+    assert "dnf -y install strongswan polkit libsecret" not in workflow
+    assert "dnf -y install ./dist/gic-ipsec-client-*.rpm" in workflow
+    assert "rpm -qpR dist/gic-ipsec-client-*.rpm | sort" in workflow
+    assert "grep -Fx 'strongswan' rpm-requires.txt" in workflow
+    assert "grep -Fx 'polkit' rpm-requires.txt" in workflow
+    assert "grep -Fx 'libsecret' rpm-requires.txt" in workflow
+    assert "grep -Fx 'iproute' rpm-requires.txt" in workflow
+    assert "grep -Fx 'systemd-resolved' rpm-requires.txt" in workflow
     assert "! grep -F '/usr/sbin/swanctl' rpm-requires.txt" in workflow
     assert "! grep -F '/usr/bin/swanctl' rpm-requires.txt" in workflow
-    assert "! grep -F 'strongswan-swanctl' rpm-requires.txt" in workflow
+    assert "! grep -F 'swanctl' rpm-requires.txt" in workflow
     assert "command -v swanctl" in workflow
-    assert "swanctl --version" in workflow
+    assert "command -v resolvectl" in workflow
+    assert "command -v pkexec" in workflow
+    assert "command -v ip" in workflow
     assert "gic-ipsec-client --version" in workflow
-    assert "dnf repoquery --whatprovides '*/swanctl'" in workflow
-    assert "dnf repoquery --whatprovides '*/swanctl'" in provider_script
+    assert "test -x /usr/libexec/gic-ipsec-client/gic-ipsec-helper" in workflow
+    assert "rpm -q strongswan polkit libsecret iproute systemd-resolved" in workflow
+    assert "dnf repoquery --whatprovides '*/swanctl'" not in workflow
     assert "strongswan-swanctl" not in fedora_deps
+    assert "sudo dnf install ./gic-ipsec-client-0.1.0-1.x86_64.rpm" in readme
+    assert "rpm -Uvh" not in readme
 
 
 def test_ubuntu_package_smoke_workflow_installs_built_deb() -> None:

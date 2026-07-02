@@ -38,34 +38,34 @@ jobs:
       image: fedora:latest
 
     steps:
-      - name: Install validation tools
-        run: dnf -y install dnf-plugins-core which
-
       - name: Download RPM artifact
         uses: actions/download-artifact@v4
         with:
           name: gic-ipsec-client-rpm
           path: dist
 
-      - name: Validate swanctl provider
-        run: dnf repoquery --whatprovides '*/swanctl'
-
       - name: Inspect RPM requirements
         run: |
-          rpm -qpR dist/gic-ipsec-client-*.rpm | tee rpm-requires.txt
-          grep -F 'strongswan' rpm-requires.txt
+          rpm -qpR dist/gic-ipsec-client-*.rpm | sort | tee rpm-requires.txt
+          grep -Fx 'strongswan' rpm-requires.txt
+          grep -Fx 'polkit' rpm-requires.txt
+          grep -Fx 'libsecret' rpm-requires.txt
+          grep -Fx 'iproute' rpm-requires.txt
+          grep -Fx 'systemd-resolved' rpm-requires.txt
           ! grep -F '/usr/sbin/swanctl' rpm-requires.txt
           ! grep -F '/usr/bin/swanctl' rpm-requires.txt
-          ! grep -F 'strongswan-swanctl' rpm-requires.txt
-
-      - name: Install Fedora runtime dependencies
-        run: dnf -y install strongswan polkit libsecret
+          ! grep -F 'swanctl' rpm-requires.txt
 
       - name: Install RPM in clean Fedora container
-        run: dnf -y install ./dist/gic-ipsec-client-*-1.x86_64.rpm
+        run: dnf -y install ./dist/gic-ipsec-client-*.rpm
 
       - name: Verify installed commands
         run: |
-          command -v swanctl
-          swanctl --version
           gic-ipsec-client --version
+          command -v gic-ipsec-client
+          test -x /usr/libexec/gic-ipsec-client/gic-ipsec-helper
+          command -v swanctl
+          command -v resolvectl
+          command -v pkexec
+          command -v ip
+          rpm -q strongswan polkit libsecret iproute systemd-resolved

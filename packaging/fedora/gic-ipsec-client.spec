@@ -6,12 +6,10 @@ Summary:        strongSwan-backed multi-site IKEv2 VPN client
 License:        MIT
 URL:            https://example.invalid/gic-ipsec-client
 Requires: strongswan
-Requires: python3
 Requires: polkit
-Requires: NetworkManager
-Requires: systemd-resolved
+Requires: libsecret
 Requires: iproute
-Requires: bind-utils
+Requires: systemd-resolved
 
 %description
 GIC IPsec Client is a small Linux desktop VPN client that uses the system
