@@ -1,11 +1,12 @@
-# GIC IPsec Client
+# GIC (GUI IPsec Client)
 
-GIC IPsec Client is a Linux desktop VPN client for multiple IKEv2 remote-access
-profiles. It uses the system strongSwan `swanctl`/VICI backend and delegates
-root-only operations to a small `pkexec` helper.
+GUI IPsec Client is a Linux desktop VPN client for multiple IKEv2 remote-access
+profiles. It uses the system strongSwan swanctl/VICI backend and delegates
+root-only operations to a small `pkexec` helper. Was build mostly due
+to strongswan/swanctl problems with DNS and of course a user friendly interface.
+Did test with a FortiGate, because my setup uses a FortigGate, but, i think
+it will work with outher vendors as well.
 
-The app does not ship any customer or site profile. Users create or import
-profiles, and secrets are stored only through Linux Secret Service/keyring.
 
 ## Features
 
@@ -75,8 +76,8 @@ bash ./packaging/build-packages.sh
 
 Expected outputs:
 
-- `dist/gic-ipsec-client_<version>_amd64.deb`
-- `dist/gic-ipsec-client-<version>-1.x86_64.rpm`
+- `gic-ipsec-client/dist/gic-ipsec-client_<version>_amd64.deb`
+- `gic-ipsec-client/dist/gic-ipsec-client-<version>-1.x86_64.rpm`
 
 Install the local Ubuntu package with `apt` so package dependencies are resolved:
 
