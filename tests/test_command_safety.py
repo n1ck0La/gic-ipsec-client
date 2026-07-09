@@ -60,8 +60,22 @@ def test_run_command_passes_shell_false(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_runtime_command_timeouts_are_bounded() -> None:
-    assert commands.systemctl_is_active("strongswan-starter.service").timeout_seconds == 15
-    assert commands.systemctl_start("strongswan-starter.service").timeout_seconds == 15
+    assert commands.STRONGSWAN_SERVICE_CANDIDATES == (
+        "strongswan.service",
+        "charon-systemd.service",
+    )
+    assert commands.VICI_SOCKET_PATHS == (
+        Path("/run/strongswan/charon.vici"),
+        Path("/var/run/strongswan/charon.vici"),
+        Path("/run/charon.vici"),
+        Path("/var/run/charon.vici"),
+    )
+    assert commands.STRONGSWAN_STARTER_SERVICE not in commands.STRONGSWAN_SERVICE_CANDIDATES
+    assert commands.systemctl_is_active("strongswan.service").timeout_seconds == 15
+    assert commands.systemctl_start("strongswan.service").timeout_seconds == 15
+    assert commands.systemctl_disable_now("strongswan-starter.service").timeout_seconds == 30
+    assert commands.systemctl_enable_now("strongswan.service").timeout_seconds == 30
+    assert commands.find_vici_sockets().timeout_seconds == 10
     assert commands.swanctl_load_all().timeout_seconds == 20
     assert commands.swanctl_initiate("gic-child").timeout_seconds == 60
     assert commands.swanctl_list_sas().timeout_seconds == 15

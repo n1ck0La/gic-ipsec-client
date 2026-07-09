@@ -30,12 +30,18 @@ HELPER_FALLBACK_PATHS = (
 )
 POLKIT_POLICY_PATH = Path("/usr/share/polkit-1/actions/com.gicipsec.client.policy")
 POLKIT_EXEC_PATH_KEY = "org.freedesktop.policykit.exec.path"
-STRONGSWAN_SERVICE_CANDIDATES = (
-    "strongswan-starter.service",
-    "strongswan.service",
-    "charon-systemd.service",
+STRONGSWAN_STARTER_SERVICE = "strongswan-starter.service"
+STRONGSWAN_SERVICE_CANDIDATES = ("strongswan.service", "charon-systemd.service")
+VICI_SOCKET_PATHS = (
+    Path("/run/strongswan/charon.vici"),
+    Path("/var/run/strongswan/charon.vici"),
+    Path("/run/charon.vici"),
+    Path("/var/run/charon.vici"),
 )
-VICI_SOCKET_PATHS = (Path("/run/charon.vici"), Path("/var/run/charon.vici"))
+STARTER_INCOMPATIBLE_MESSAGE = (
+    "strongswan-starter.service is active, but this app requires the swanctl/VICI "
+    "service. Disable strongswan-starter and start strongswan.service."
+)
 VICI_UNAVAILABLE_MESSAGE = (
     "strongSwan is installed but the VICI control socket is not available. "
     "Start the strongSwan service or install the swanctl/VICI packages."
@@ -202,6 +208,21 @@ def systemctl_list_unit_file(service_name: str) -> CommandSpec:
 def systemctl_start(service_name: str) -> CommandSpec:
     service = service_name.removesuffix(".service")
     return CommandSpec(("systemctl", "start", service), timeout_seconds=15)
+
+
+def systemctl_disable_now(service_name: str) -> CommandSpec:
+    return CommandSpec(("systemctl", "disable", "--now", service_name), timeout_seconds=30)
+
+
+def systemctl_enable_now(service_name: str) -> CommandSpec:
+    return CommandSpec(("systemctl", "enable", "--now", service_name), timeout_seconds=30)
+
+
+def find_vici_sockets() -> CommandSpec:
+    return CommandSpec(
+        ("find", "/run", "/var/run", "-type", "s", "-name", "*vici*"),
+        timeout_seconds=10,
+    )
 
 
 def journalctl_logs(

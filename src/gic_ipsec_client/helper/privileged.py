@@ -60,14 +60,48 @@ def _path_is_socket(path: Path) -> bool:
 
 def _vici_socket_state(
     socket_exists: object,
-) -> dict[str, bool]:
+    run_command: object | None = None,
+) -> dict[str, object]:
     socket_exists_fn = socket_exists if callable(socket_exists) else _path_is_socket
-    run_socket_exists = bool(socket_exists_fn(commands.VICI_SOCKET_PATHS[0]))
-    var_run_socket_exists = bool(socket_exists_fn(commands.VICI_SOCKET_PATHS[1]))
+    run_command_fn = run_command if callable(run_command) else commands.run_command
+    exists_by_path = {
+        str(path): bool(socket_exists_fn(path)) for path in commands.VICI_SOCKET_PATHS
+    }
+    fixed_sockets = [path for path, exists in exists_by_path.items() if exists]
+    found_sockets: list[str] = []
+    find_returncode = -1
+    find_output = ""
+    if not fixed_sockets:
+        try:
+            completed = run_command_fn(commands.find_vici_sockets())
+            find_returncode = int(getattr(completed, "returncode", -1))
+            find_output = _completed_message(completed)
+            if find_returncode == 0:
+                found_sockets = [
+                    line.strip()
+                    for line in str(getattr(completed, "stdout", "") or "").splitlines()
+                    if line.strip()
+                ]
+        except (OSError, TimeoutError, subprocess.TimeoutExpired):
+            find_returncode = 127
+    candidates = list(dict.fromkeys([*fixed_sockets, *found_sockets]))
+    vici_socket_path = candidates[0] if candidates else ""
     return {
-        "run_charon_vici_exists": run_socket_exists,
-        "var_run_charon_vici_exists": var_run_socket_exists,
-        "vici_socket_available": run_socket_exists or var_run_socket_exists,
+        "run_strongswan_charon_vici_exists": exists_by_path.get(
+            "/run/strongswan/charon.vici",
+            False,
+        ),
+        "var_run_strongswan_charon_vici_exists": exists_by_path.get(
+            "/var/run/strongswan/charon.vici",
+            False,
+        ),
+        "run_charon_vici_exists": exists_by_path.get("/run/charon.vici", False),
+        "var_run_charon_vici_exists": exists_by_path.get("/var/run/charon.vici", False),
+        "vici_socket_available": bool(vici_socket_path),
+        "vici_socket_path": vici_socket_path,
+        "vici_socket_candidates": candidates,
+        "find_vici_sockets_returncode": find_returncode,
+        "find_vici_sockets_output": find_output,
     }
 
 
@@ -120,6 +154,47 @@ def detect_strongswan_service(
     }
 
 
+def _wait_for_vici_socket(
+    payload: dict[str, object],
+    *,
+    socket_exists: object,
+    run_command: object,
+    sleep: object,
+) -> None:
+    socket_exists_fn = socket_exists if callable(socket_exists) else _path_is_socket
+    sleep_fn = sleep if callable(sleep) else time.sleep
+    for _ in range(VICI_WAIT_ATTEMPTS):
+        payload.update(_vici_socket_state(socket_exists_fn, run_command=run_command))
+        if payload["vici_socket_available"]:
+            break
+        sleep_fn(VICI_WAIT_INTERVAL_SECONDS)
+
+
+def _swanctl_list_conns_state(
+    *,
+    run_command: object,
+) -> dict[str, object]:
+    run_command_fn = run_command if callable(run_command) else commands.run_command
+    try:
+        completed = run_command_fn(commands.swanctl_list_conns())
+    except (OSError, TimeoutError, subprocess.TimeoutExpired) as exc:
+        return {
+            "preflight_list_conns_returncode": 127,
+            "preflight_list_conns_stdout": "",
+            "preflight_list_conns_stderr": str(exc),
+            "preflight_list_conns_output": str(exc),
+            "swanctl_list_conns_ok": False,
+        }
+    output = _completed_message(completed)
+    return {
+        "preflight_list_conns_returncode": completed.returncode,
+        "preflight_list_conns_stdout": getattr(completed, "stdout", "") or "",
+        "preflight_list_conns_stderr": getattr(completed, "stderr", "") or "",
+        "preflight_list_conns_output": output,
+        "swanctl_list_conns_ok": completed.returncode == 0,
+    }
+
+
 def strongswan_preflight(
     *,
     raise_on_failure: bool = True,
@@ -133,13 +208,68 @@ def strongswan_preflight(
     payload: dict[str, object] = {
         "command_v_swanctl": commands.command_v("swanctl"),
         "resolved_swanctl_path": commands.resolve_swanctl_path() or "",
+        "selected_strongswan_service": "",
+        "strongswan_starter_active": False,
+        "strongswan_starter_state": "",
+        "strongswan_starter_disabled": False,
+        "strongswan_starter_disable_returncode": None,
+        "strongswan_starter_disable_output": "",
+        "strongswan_starter_warning": "",
+        "strongswan_service_available": False,
+        "strongswan_service_active_state": "",
+        "charon_systemd_service_available": False,
+        "charon_systemd_service_state": "",
+        "strongswan_service_started": False,
+        "strongswan_service_enable_returncode": None,
+        "strongswan_service_enable_output": "",
         "started_strongswan_service": False,
         "systemctl_start_returncode": None,
         "systemctl_start_output": "",
+        "preflight_list_conns_returncode": None,
+        "preflight_list_conns_stdout": "",
+        "preflight_list_conns_stderr": "",
+        "preflight_list_conns_output": "",
+        "swanctl_list_conns_ok": False,
         "preflight_error": "",
     }
     payload.update(detect_strongswan_service(run_command=run_command_fn))
-    payload.update(_vici_socket_state(socket_exists_fn))
+    payload["selected_strongswan_service"] = payload.get("detected_strongswan_service", "")
+    strongswan_service_available = _service_available(
+        "strongswan.service",
+        run_command=run_command_fn,
+    )
+    charon_systemd_service_available = _service_available(
+        "charon-systemd.service",
+        run_command=run_command_fn,
+    )
+    strongswan_service_state = (
+        _service_active_state("strongswan.service", run_command=run_command_fn)
+        if strongswan_service_available
+        else "not found"
+    )
+    charon_systemd_service_state = (
+        _service_active_state("charon-systemd.service", run_command=run_command_fn)
+        if charon_systemd_service_available
+        else "not found"
+    )
+    payload["strongswan_service_available"] = strongswan_service_available
+    payload["strongswan_service_active_state"] = strongswan_service_state
+    payload["charon_systemd_service_available"] = charon_systemd_service_available
+    payload["charon_systemd_service_state"] = charon_systemd_service_state
+    if strongswan_service_available:
+        payload["selected_strongswan_service"] = "strongswan.service"
+        payload["detected_strongswan_service"] = "strongswan.service"
+        payload["strongswan_service_state"] = strongswan_service_state
+    starter_state = _service_active_state(
+        commands.STRONGSWAN_STARTER_SERVICE,
+        run_command=run_command_fn,
+    )
+    starter_active = starter_state == "active"
+    payload["strongswan_starter_state"] = starter_state
+    payload["strongswan_starter_active"] = starter_active
+    if starter_active:
+        payload["strongswan_starter_warning"] = commands.STARTER_INCOMPATIBLE_MESSAGE
+    payload.update(_vici_socket_state(socket_exists_fn, run_command=run_command_fn))
 
     if not payload["resolved_swanctl_path"]:
         message = (
@@ -151,30 +281,76 @@ def strongswan_preflight(
             raise HelperError(message)
         return payload
 
+    if starter_active:
+        disable_completed = run_command_fn(
+            commands.systemctl_disable_now(commands.STRONGSWAN_STARTER_SERVICE)
+        )
+        payload["strongswan_starter_disable_returncode"] = disable_completed.returncode
+        payload["strongswan_starter_disable_output"] = _completed_message(disable_completed)
+        payload["strongswan_starter_disabled"] = disable_completed.returncode == 0
+
+    if strongswan_service_available and strongswan_service_state != "active":
+        enable_completed = run_command_fn(commands.systemctl_enable_now("strongswan.service"))
+        payload["strongswan_service_enable_returncode"] = enable_completed.returncode
+        payload["strongswan_service_enable_output"] = _completed_message(enable_completed)
+        payload["strongswan_service_started"] = enable_completed.returncode == 0
+        payload["started_strongswan_service"] = enable_completed.returncode == 0
+        payload["selected_strongswan_service"] = "strongswan.service"
+        payload["detected_strongswan_service"] = "strongswan.service"
+        _wait_for_vici_socket(
+            payload,
+            socket_exists=socket_exists_fn,
+            run_command=run_command_fn,
+            sleep=sleep_fn,
+        )
+        payload["strongswan_service_state"] = _service_active_state(
+            "strongswan.service",
+            run_command=run_command_fn,
+        )
+        payload["strongswan_service_active_state"] = payload["strongswan_service_state"]
+
     if not payload["vici_socket_available"]:
         service_name = str(payload.get("detected_strongswan_service", "") or "")
-        if service_name:
+        if service_name and service_name != "strongswan.service":
             try:
                 start_completed = run_command_fn(commands.systemctl_start(service_name))
                 payload["systemctl_start_returncode"] = start_completed.returncode
                 payload["systemctl_start_output"] = _completed_message(start_completed)
                 payload["started_strongswan_service"] = start_completed.returncode == 0
+                payload["strongswan_service_started"] = start_completed.returncode == 0
             except (OSError, TimeoutError, subprocess.TimeoutExpired) as exc:
                 payload["systemctl_start_output"] = f"systemctl start failed: {exc}"
-            for _ in range(VICI_WAIT_ATTEMPTS):
-                payload.update(_vici_socket_state(socket_exists_fn))
-                if payload["vici_socket_available"]:
-                    break
-                sleep_fn(VICI_WAIT_INTERVAL_SECONDS)
+            _wait_for_vici_socket(
+                payload,
+                socket_exists=socket_exists_fn,
+                run_command=run_command_fn,
+                sleep=sleep_fn,
+            )
             payload["strongswan_service_state"] = _service_active_state(
                 service_name,
                 run_command=run_command_fn,
             )
+        elif service_name == "strongswan.service":
+            _wait_for_vici_socket(
+                payload,
+                socket_exists=socket_exists_fn,
+                run_command=run_command_fn,
+                sleep=sleep_fn,
+            )
 
-    if not payload["vici_socket_available"]:
+    payload.update(_swanctl_list_conns_state(run_command=run_command_fn))
+    if payload["swanctl_list_conns_ok"]:
+        payload["vici_socket_available"] = True
+        return payload
+
+    payload["preflight_error"] = (
+        str(payload.get("preflight_list_conns_output") or "") or commands.VICI_UNAVAILABLE_MESSAGE
+    )
+    if not payload["preflight_error"]:
         payload["preflight_error"] = commands.VICI_UNAVAILABLE_MESSAGE
+    if not payload["vici_socket_available"] or not payload["swanctl_list_conns_ok"]:
         if raise_on_failure:
-            raise HelperError(commands.VICI_UNAVAILABLE_MESSAGE)
+            raise HelperError(str(payload["preflight_error"]))
     return payload
 
 
@@ -324,6 +500,7 @@ def delete_profile(profile_id: str, *, config_root_override: str = "") -> list[s
 
 
 def load_profile() -> int:
+    strongswan_preflight()
     return commands.run_command(commands.swanctl_load_all()).returncode
 
 
@@ -331,6 +508,7 @@ def connect_profile(profile_id: str, *, config_root_override: str = "") -> int:
     validate_uuid(profile_id)
     connection_name = f"{CONNECTION_PREFIX}{profile_id}"
     child_name = f"{connection_name}-child"
+    strongswan_preflight()
     load_completed = commands.run_command(commands.swanctl_load_all())
     if load_completed.returncode != 0:
         raise HelperError(_completed_message(load_completed) or "swanctl --load-all failed.")
@@ -377,6 +555,7 @@ def disconnect_profile(profile_id: str) -> int:
         run_command=commands.run_command,
         cleanup_on_success=False,
     )
+    strongswan_preflight()
     completed = commands.run_command(commands.swanctl_terminate(f"{CONNECTION_PREFIX}{profile_id}"))
     warnings = _dns_warning_lines(profile_id)
     if completed.returncode != 0:
@@ -425,6 +604,10 @@ def reconnect_network_interface(profile_id: str) -> int:
 
 def status_profile(profile_id: str) -> str:
     validate_uuid(profile_id)
+    try:
+        strongswan_preflight()
+    except HelperError:
+        return "Failed"
     completed = commands.run_command(commands.swanctl_list_sas())
     output = (completed.stdout or "") + (completed.stderr or "")
     if completed.returncode != 0:
@@ -490,11 +673,60 @@ def swanctl_diagnostics(
         "command_v_swanctl": commands.command_v("swanctl"),
         "resolved_swanctl_path": resolved_swanctl_path,
         "swanctl_rpm_owner": swanctl_rpm_owner,
+        "selected_strongswan_service": preflight.get("selected_strongswan_service", ""),
         "detected_strongswan_service": preflight.get("detected_strongswan_service", ""),
         "strongswan_service_state": preflight.get("strongswan_service_state", ""),
+        "strongswan_service_available": preflight.get("strongswan_service_available", False),
+        "strongswan_service_active_state": preflight.get(
+            "strongswan_service_active_state",
+            "",
+        ),
+        "charon_systemd_service_available": preflight.get(
+            "charon_systemd_service_available",
+            False,
+        ),
+        "charon_systemd_service_state": preflight.get(
+            "charon_systemd_service_state",
+            "",
+        ),
+        "strongswan_starter_active": preflight.get("strongswan_starter_active", False),
+        "strongswan_starter_state": preflight.get("strongswan_starter_state", ""),
+        "strongswan_starter_disabled": preflight.get("strongswan_starter_disabled", False),
+        "strongswan_starter_disable_returncode": preflight.get(
+            "strongswan_starter_disable_returncode"
+        ),
+        "strongswan_starter_disable_output": preflight.get(
+            "strongswan_starter_disable_output",
+            "",
+        ),
+        "strongswan_starter_warning": preflight.get("strongswan_starter_warning", ""),
+        "strongswan_service_started": preflight.get("strongswan_service_started", False),
+        "strongswan_service_enable_returncode": preflight.get(
+            "strongswan_service_enable_returncode"
+        ),
+        "strongswan_service_enable_output": preflight.get(
+            "strongswan_service_enable_output",
+            "",
+        ),
         "run_charon_vici_exists": preflight.get("run_charon_vici_exists", False),
+        "run_strongswan_charon_vici_exists": preflight.get(
+            "run_strongswan_charon_vici_exists",
+            False,
+        ),
         "var_run_charon_vici_exists": preflight.get("var_run_charon_vici_exists", False),
+        "var_run_strongswan_charon_vici_exists": preflight.get(
+            "var_run_strongswan_charon_vici_exists",
+            False,
+        ),
         "vici_socket_available": preflight.get("vici_socket_available", False),
+        "vici_socket_path": preflight.get("vici_socket_path", ""),
+        "vici_socket_candidates": preflight.get("vici_socket_candidates", []),
+        "find_vici_sockets_returncode": preflight.get("find_vici_sockets_returncode"),
+        "find_vici_sockets_output": preflight.get("find_vici_sockets_output", ""),
+        "preflight_list_conns_returncode": preflight.get("preflight_list_conns_returncode"),
+        "preflight_list_conns_stdout": preflight.get("preflight_list_conns_stdout", ""),
+        "preflight_list_conns_stderr": preflight.get("preflight_list_conns_stderr", ""),
+        "swanctl_list_conns_ok": preflight.get("swanctl_list_conns_ok", False),
         "started_strongswan_service": preflight.get("started_strongswan_service", False),
         "systemctl_start_returncode": preflight.get("systemctl_start_returncode"),
         "systemctl_start_output": preflight.get("systemctl_start_output", ""),
@@ -511,8 +743,12 @@ def swanctl_diagnostics(
         "generated_profile_file_exists": bool(profile_config and profile_config.exists()),
         "generated_connection_loaded": loaded,
         "list_conns_returncode": list_conns_completed.returncode,
+        "list_conns_stdout": getattr(list_conns_completed, "stdout", "") or "",
+        "list_conns_stderr": getattr(list_conns_completed, "stderr", "") or "",
         "list_conns_output": list_conns_output,
         "list_sas_returncode": list_sas_completed.returncode,
+        "list_sas_stdout": getattr(list_sas_completed, "stdout", "") or "",
+        "list_sas_stderr": getattr(list_sas_completed, "stderr", "") or "",
         "list_sas_output": _completed_message(list_sas_completed),
         "dns_apply_report": load_dns_apply_report(profile_id) if profile_id else {},
         "dns_state_snapshot": dns_state_snapshot.to_dict() if dns_state_snapshot else {},
@@ -554,6 +790,7 @@ def error_to_message(exc: Exception) -> str:
 
 
 def _run_swanctl_for_output(spec: commands.CommandSpec) -> str:
+    strongswan_preflight()
     completed = commands.run_command(spec)
     output = _completed_message(completed)
     if completed.returncode != 0:

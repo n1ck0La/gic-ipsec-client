@@ -523,6 +523,10 @@ def collect_diagnostics(
         "helper_error": swanctl_diagnostics.get("error", ""),
     }
     summary["strongswan_service"] = {
+        "selected_strongswan_service": swanctl_diagnostics.get(
+            "selected_strongswan_service",
+            "",
+        ),
         "detected_strongswan_service": swanctl_diagnostics.get(
             "detected_strongswan_service",
             "",
@@ -531,19 +535,80 @@ def collect_diagnostics(
             "strongswan_service_state",
             "",
         ),
+        "strongswan_service_available": swanctl_diagnostics.get(
+            "strongswan_service_available",
+            False,
+        ),
+        "strongswan_service_active_state": swanctl_diagnostics.get(
+            "strongswan_service_active_state",
+            "",
+        ),
+        "charon_systemd_service_available": swanctl_diagnostics.get(
+            "charon_systemd_service_available",
+            False,
+        ),
+        "charon_systemd_service_state": swanctl_diagnostics.get(
+            "charon_systemd_service_state",
+            "",
+        ),
+        "strongswan_starter_active": swanctl_diagnostics.get(
+            "strongswan_starter_active",
+            False,
+        ),
+        "strongswan_starter_state": swanctl_diagnostics.get(
+            "strongswan_starter_state",
+            "",
+        ),
+        "strongswan_starter_disabled": swanctl_diagnostics.get(
+            "strongswan_starter_disabled",
+            False,
+        ),
+        "strongswan_starter_warning": swanctl_diagnostics.get(
+            "strongswan_starter_warning",
+            "",
+        ),
+        "strongswan_service_started": swanctl_diagnostics.get(
+            "strongswan_service_started",
+            False,
+        ),
         "/run/charon.vici exists": swanctl_diagnostics.get(
             "run_charon_vici_exists",
+            False,
+        ),
+        "/run/strongswan/charon.vici exists": swanctl_diagnostics.get(
+            "run_strongswan_charon_vici_exists",
             False,
         ),
         "/var/run/charon.vici exists": swanctl_diagnostics.get(
             "var_run_charon_vici_exists",
             False,
         ),
+        "/var/run/strongswan/charon.vici exists": swanctl_diagnostics.get(
+            "var_run_strongswan_charon_vici_exists",
+            False,
+        ),
         "vici_socket_available": swanctl_diagnostics.get("vici_socket_available", False),
+        "vici_socket_path": swanctl_diagnostics.get("vici_socket_path", ""),
+        "vici_socket_candidates": swanctl_diagnostics.get("vici_socket_candidates", []),
         "started_strongswan_service": swanctl_diagnostics.get(
             "started_strongswan_service",
             False,
         ),
+        "list_conns_returncode": swanctl_diagnostics.get("list_conns_returncode", -1),
+        "list_conns_stdout": swanctl_diagnostics.get("list_conns_stdout", ""),
+        "list_conns_stderr": swanctl_diagnostics.get("list_conns_stderr", ""),
+        "preflight_list_conns_returncode": swanctl_diagnostics.get(
+            "preflight_list_conns_returncode",
+        ),
+        "preflight_list_conns_stdout": swanctl_diagnostics.get(
+            "preflight_list_conns_stdout",
+            "",
+        ),
+        "preflight_list_conns_stderr": swanctl_diagnostics.get(
+            "preflight_list_conns_stderr",
+            "",
+        ),
+        "swanctl_list_conns_ok": swanctl_diagnostics.get("swanctl_list_conns_ok", False),
         "preflight_error": swanctl_diagnostics.get("preflight_error", ""),
     }
     if profile is not None:
