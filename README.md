@@ -45,6 +45,35 @@ Run the helper:
 python -m gic_ipsec_client.helper.cli --help
 ```
 
+## Versioning
+
+The repository root `VERSION` file is the release source of truth for the app
+version. `PACKAGE_RELEASE` is the package rebuild revision used by RPM and DEB
+metadata.
+
+Use semantic versioning:
+
+- Bug fix: patch bump, for example `0.1.1` to `0.1.2`
+- Feature: minor bump, for example `0.1.1` to `0.2.0`
+- Breaking change: major bump
+- Packaging-only rebuild with the same code: increment `PACKAGE_RELEASE`
+
+For every fix or feature intended for testing:
+
+```bash
+./scripts/bump-version.sh patch
+git commit -am "Bump version to X.Y.Z"
+git tag vX.Y.Z
+git push --tags
+```
+
+For a packaging-only rebuild, use:
+
+```bash
+./scripts/bump-package-release.sh
+git commit -am "Bump package release to X.Y.Z-N"
+```
+
 ## Packaging
 
 Install nfpm.
@@ -72,18 +101,25 @@ Then run:
 ```bash
 cd gic-ipsec-client
 bash ./packaging/build-packages.sh
+bash ./scripts/validate-package-version.sh
 ```
 
-Expected outputs:
+Expected outputs for version `0.1.1` and package release `1`:
 
-- `gic-ipsec-client/dist/gic-ipsec-client_<version>_amd64.deb`
-- `gic-ipsec-client/dist/gic-ipsec-client-<version>-1.x86_64.rpm`
+- `gic-ipsec-client/dist/gic-ipsec-client_0.1.1-1_amd64.deb`
+- `gic-ipsec-client/dist/gic-ipsec-client-0.1.1-1.x86_64.rpm`
+
+For non-tag CI builds, the package builder can append git metadata:
+
+```bash
+APPEND_GIT_RELEASE=1 bash ./packaging/build-packages.sh
+```
 
 Install the local Ubuntu package with `apt` so package dependencies are resolved:
 
 ```bash
 sudo apt update
-sudo apt install ./gic-ipsec-client_0.1.0_amd64.deb
+sudo apt install ./gic-ipsec-client_0.1.1-1_amd64.deb
 ```
 
 If you already tried installing with `dpkg -i`, repair dependencies with:
@@ -95,7 +131,7 @@ sudo apt -f install
 Install the local Fedora package with `dnf` so package dependencies are resolved:
 
 ```bash
-sudo dnf install ./gic-ipsec-client-0.1.0-1.x86_64.rpm
+sudo dnf install ./gic-ipsec-client-0.1.1-1.x86_64.rpm
 ```
 
 The package layout installs:

@@ -5,11 +5,13 @@ from uuid import uuid4
 
 import pytest
 
+from gic_ipsec_client import __version__
 from gic_ipsec_client.backend import commands
 from gic_ipsec_client.backend.models import ConnectionStatus, VpnProfile
 from gic_ipsec_client.backend.strongswan import StrongSwanBackend
 from gic_ipsec_client.backend.swanctl_paths import SwanctlLayout
 from gic_ipsec_client.backend.validators import ProfileValidationError
+from gic_ipsec_client.helper.cli import main as helper_main
 from gic_ipsec_client.main import main
 
 
@@ -253,4 +255,12 @@ def test_gui_entrypoint_version_is_headless(capsys: pytest.CaptureFixture[str]) 
 
     output = capsys.readouterr().out
 
-    assert output.startswith("gic-ipsec-client ")
+    assert output.strip() == f"gic-ipsec-client {__version__}"
+
+
+def test_helper_entrypoint_version_is_headless(capsys: pytest.CaptureFixture[str]) -> None:
+    assert helper_main(["--version"]) == 0
+
+    output = capsys.readouterr().out
+
+    assert output.strip() == f"gic-ipsec-helper {__version__}"

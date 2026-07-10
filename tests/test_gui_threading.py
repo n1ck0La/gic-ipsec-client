@@ -13,8 +13,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
+from gic_ipsec_client import __version__
 from gic_ipsec_client.backend.models import VpnProfile
 from gic_ipsec_client.gui import workers
 from gic_ipsec_client.gui.log_viewer import SignalLogHandler
@@ -185,3 +186,28 @@ def test_qplaintextedit_logging_uses_signal_handler_only() -> None:
     source = inspect.getsource(SignalLogHandler.emit)
     assert "appendPlainText" not in source
     assert "setPlainText" not in source
+
+
+def test_about_dialog_shows_package_version(
+    app: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    profile: VpnProfile,
+) -> None:
+    messages: list[tuple[str, str]] = []
+    window = _window(app, monkeypatch, tmp_path, profile)
+
+    def fake_information(parent: object, title: str, text: str) -> None:
+        messages.append((title, text))
+
+    monkeypatch.setattr(QMessageBox, "information", fake_information)
+
+    window.show_about()
+
+    assert messages == [
+        (
+            "About GIC IPsec Client",
+            f"GIC IPsec Client {__version__}\n\nstrongSwan swanctl/VICI desktop client.",
+        )
+    ]
+    window.close()

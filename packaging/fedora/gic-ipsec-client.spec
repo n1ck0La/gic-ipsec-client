@@ -1,5 +1,5 @@
 Name:           gic-ipsec-client
-Version:        0.1.0
+Version:        0.1.1
 Release:        1%{?dist}
 Summary:        strongSwan-backed multi-site IKEv2 VPN client
 

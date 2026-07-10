@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from gic_ipsec_client import __version__
 from gic_ipsec_client.backend import secrets
 from gic_ipsec_client.backend.diagnostics import redact_text
 from gic_ipsec_client.backend.models import ConnectionStatus, VpnProfile
@@ -106,6 +107,8 @@ class MainWindow(QMainWindow):
         export_profile_button.clicked.connect(self.export_profile)
         settings_button = QPushButton("Settings")
         settings_button.clicked.connect(self.edit_settings)
+        about_button = QPushButton("About")
+        about_button.clicked.connect(self.show_about)
         toolbar.addWidget(add_button)
         toolbar.addWidget(edit_button)
         toolbar.addWidget(clone_button)
@@ -113,6 +116,7 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(import_button)
         toolbar.addWidget(export_profile_button)
         toolbar.addWidget(settings_button)
+        toolbar.addWidget(about_button)
 
         connect_button = QPushButton("Connect")
         connect_button.clicked.connect(self.connect_profile)
@@ -413,6 +417,13 @@ class MainWindow(QMainWindow):
         save_app_settings(self.settings)
         selected = self._config_root_override() or "Automatic"
         self._append_log(f"Settings saved. swanctl config root: {selected}")
+
+    def show_about(self) -> None:
+        QMessageBox.information(
+            self,
+            "About GIC IPsec Client",
+            f"GIC IPsec Client {__version__}\n\nstrongSwan swanctl/VICI desktop client.",
+        )
 
     def _wire_worker(
         self,

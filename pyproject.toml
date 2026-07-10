@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "gic-ipsec-client"
-version = "0.1.0"
+version = "0.1.1"
 description = "GIC IPsec Client, a strongSwan-backed Linux desktop IPsec/IKEv2 client"
 readme = "README.md"
 requires-python = ">=3.11"

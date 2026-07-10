@@ -1,10 +1,90 @@
 from __future__ import annotations
 
+import os
+import tomllib
 from pathlib import Path
 
+from gic_ipsec_client import __version__
 from gic_ipsec_client.backend.models import VpnProfile, fortigate_default_profile
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _version() -> str:
+    return (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+
+
+def _package_release() -> str:
+    return (ROOT / "PACKAGE_RELEASE").read_text(encoding="utf-8").strip()
+
+
+def test_version_sources_are_synchronized() -> None:
+    version = _version()
+    package_release = _package_release()
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    version_py = (ROOT / "src" / "gic_ipsec_client" / "_version.py").read_text(
+        encoding="utf-8"
+    )
+    nfpm = (ROOT / "packaging" / "nfpm.yaml").read_text(encoding="utf-8")
+    fedora_spec = (ROOT / "packaging" / "fedora" / "gic-ipsec-client.spec").read_text(
+        encoding="utf-8"
+    )
+    debian_changelog = (ROOT / "debian" / "changelog").read_text(encoding="utf-8")
+
+    assert version == "0.1.1"
+    assert package_release == "1"
+    assert pyproject["project"]["version"] == version
+    assert __version__ == version
+    assert f'__version__ = "{version}"' in version_py
+    assert f"Version:        {version}" in fedora_spec
+    assert f"Release:        {package_release}%{{?dist}}" in fedora_spec
+    assert f"gic-ipsec-client ({version}-{package_release})" in debian_changelog
+    assert "version: ${VERSION}" in nfpm
+    assert "release: ${PACKAGE_RELEASE}" in nfpm
+
+
+def test_release_scripts_exist_and_update_expected_files() -> None:
+    bump_version = ROOT / "scripts" / "bump-version.sh"
+    bump_release = ROOT / "scripts" / "bump-package-release.sh"
+    validate = ROOT / "scripts" / "validate-package-version.sh"
+
+    for script in (bump_version, bump_release, validate):
+        assert script.exists()
+        assert os.access(script, os.X_OK)
+
+    text = bump_version.read_text(encoding="utf-8")
+
+    assert "patch|minor|major" in text
+    assert 'Path("VERSION")' in text
+    assert 'Path("PACKAGE_RELEASE")' in text
+    assert 'Path("pyproject.toml")' in text
+    assert 'Path("src/gic_ipsec_client/_version.py")' in text
+    assert 'Path("packaging/fedora/gic-ipsec-client.spec")' in text
+    assert 'Path("debian/changelog")' in text
+
+
+def test_packaging_version_validation_rejects_stale_0_1_0_artifacts() -> None:
+    checked_files = [
+        ROOT / "VERSION",
+        ROOT / "pyproject.toml",
+        ROOT / "src" / "gic_ipsec_client" / "_version.py",
+        ROOT / "packaging" / "build-packages.sh",
+        ROOT / "packaging" / "fedora" / "gic-ipsec-client.spec",
+        ROOT / "debian" / "changelog",
+        ROOT / "README.md",
+    ]
+
+    for path in checked_files:
+        assert "0.1.0" not in path.read_text(encoding="utf-8")
+
+    dist = ROOT / "dist"
+    stale_artifacts = [path.name for path in dist.glob("*0.1.0*")] if dist.exists() else []
+    assert stale_artifacts == []
+
+    validation_script = (ROOT / "scripts" / "validate-package-version.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "'*0.1.0*'" in validation_script
 
 
 def test_runtime_sources_do_not_contain_site_specific_defaults() -> None:
@@ -146,6 +226,8 @@ def test_packaging_layout_targets_requested_paths() -> None:
     assert "Requires: python3" not in fedora_spec
     assert "Requires: NetworkManager" not in fedora_spec
     assert "Requires: bind-utils" not in fedora_spec
+    assert "Version:        0.1.1" in fedora_spec
+    assert "Release:        1%{?dist}" in fedora_spec
 
     client_wrapper = ROOT / "packaging" / "bin" / "gic-ipsec-client"
     helper_wrapper = ROOT / "packaging" / "libexec" / "gic-ipsec-helper"
@@ -170,6 +252,12 @@ def test_package_builder_checks_nfpm_before_creating_venv() -> None:
 
     assert script.index('command -v "$NFPM"') < script.index("python3 -m venv")
     assert "NFPM=/absolute/path/to/nfpm" in script
+    assert 'tr -d \'[:space:]\' < VERSION' in script
+    assert 'tr -d \'[:space:]\' < PACKAGE_RELEASE' in script
+    assert 'APPEND_GIT_RELEASE' in script
+    assert 'dist/gic-ipsec-client_${VERSION}-${DEB_RELEASE}_amd64.deb' in script
+    assert 'dist/gic-ipsec-client-${VERSION}-${RPM_RELEASE}.x86_64.rpm' in script
+    assert "0.1.0" not in script
 
 
 def test_fedora_package_smoke_workflow_installs_built_rpm() -> None:
@@ -188,6 +276,13 @@ def test_fedora_package_smoke_workflow_installs_built_rpm() -> None:
     assert "actions/upload-artifact@v4" in workflow
     assert "actions/download-artifact@v4" in workflow
     assert "bash ./packaging/build-packages.sh" in workflow
+    assert "bash ./scripts/validate-package-version.sh" in workflow
+    assert "cat VERSION" in workflow
+    assert "cat PACKAGE_RELEASE" in workflow
+    assert "rpm -qp --qf '%{VERSION}'" in workflow
+    assert "rpm -qp --qf '%{RELEASE}'" in workflow
+    assert "gic-ipsec-helper ${VERSION}" in workflow
+    assert "*0.1.0*" in workflow
     assert "dnf -y install strongswan polkit libsecret" not in workflow
     assert "dnf -y install ./dist/gic-ipsec-client-*.rpm" in workflow
     assert "rpm -qpR dist/gic-ipsec-client-*.rpm | sort" in workflow
@@ -208,7 +303,7 @@ def test_fedora_package_smoke_workflow_installs_built_rpm() -> None:
     assert "rpm -q strongswan polkit libsecret iproute systemd-resolved" in workflow
     assert "dnf repoquery --whatprovides '*/swanctl'" not in workflow
     assert "strongswan-swanctl" not in fedora_deps
-    assert "sudo dnf install ./gic-ipsec-client-0.1.0-1.x86_64.rpm" in readme
+    assert "sudo dnf install ./gic-ipsec-client-0.1.1-1.x86_64.rpm" in readme
     assert "rpm -Uvh" not in readme
 
 
@@ -228,6 +323,12 @@ def test_ubuntu_package_smoke_workflow_installs_built_deb() -> None:
     assert "actions/upload-artifact@v4" in workflow
     assert "actions/download-artifact@v4" in workflow
     assert "bash ./packaging/build-packages.sh" in workflow
+    assert "bash ./scripts/validate-package-version.sh" in workflow
+    assert "cat VERSION" in workflow
+    assert "cat PACKAGE_RELEASE" in workflow
+    assert 'dpkg-deb -f "$deb_file" Version' in workflow
+    assert "gic-ipsec-helper ${VERSION}" in workflow
+    assert "*0.1.0*" in workflow
     assert "dpkg-deb -I dist/gic-ipsec-client_*.deb | grep Depends" in workflow
     assert "grep -F 'strongswan-swanctl' deb-depends.txt" in workflow
     assert "grep -F 'libstrongswan-extra-plugins' deb-depends.txt" in workflow
@@ -248,6 +349,6 @@ def test_ubuntu_package_smoke_workflow_installs_built_deb() -> None:
     assert "libstrongswan-extra-plugins" in ubuntu_deps
     assert "libxcb-cursor0" in ubuntu_deps
     assert "libxkbcommon-x11-0" in ubuntu_deps
-    assert "sudo apt install ./gic-ipsec-client_0.1.0_amd64.deb" in readme
+    assert "sudo apt install ./gic-ipsec-client_0.1.1-1_amd64.deb" in readme
     assert "sudo apt -f install" in readme
     assert "sudo dpkg -i" not in readme

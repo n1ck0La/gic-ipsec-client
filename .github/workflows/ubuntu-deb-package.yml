@@ -24,6 +24,14 @@ jobs:
       - name: Build DEB
         run: bash ./packaging/build-packages.sh
 
+      - name: Validate package version
+        run: |
+          bash ./scripts/validate-package-version.sh
+          VERSION="$(cat VERSION)"
+          PACKAGE_RELEASE="$(cat PACKAGE_RELEASE)"
+          test -f "dist/gic-ipsec-client_${VERSION}-${PACKAGE_RELEASE}_amd64.deb"
+          ! find dist -maxdepth 1 -type f -name '*0.1.0*' | grep -q .
+
       - name: Upload DEB artifact
         uses: actions/upload-artifact@v4
         with:
@@ -36,11 +44,23 @@ jobs:
     needs: build-deb
 
     steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
       - name: Download DEB artifact
         uses: actions/download-artifact@v4
         with:
           name: gic-ipsec-client-deb
           path: dist
+
+      - name: Validate DEB version metadata
+        run: |
+          VERSION="$(cat VERSION)"
+          PACKAGE_RELEASE="$(cat PACKAGE_RELEASE)"
+          deb_file="$(ls dist/gic-ipsec-client_${VERSION}-${PACKAGE_RELEASE}_*.deb)"
+          test -n "$deb_file"
+          test "$(dpkg-deb -f "$deb_file" Version)" = "${VERSION}-${PACKAGE_RELEASE}"
+          ! find dist -maxdepth 1 -type f -name '*0.1.0*' | grep -q .
 
       - name: Inspect DEB dependencies
         run: |
@@ -55,6 +75,9 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y ./dist/gic-ipsec-client_*.deb
+          VERSION="$(cat VERSION)"
+          test "$(gic-ipsec-client --version)" = "gic-ipsec-client ${VERSION}"
+          test "$(/usr/libexec/gic-ipsec-client/gic-ipsec-helper --version)" = "gic-ipsec-helper ${VERSION}"
           command -v gic-ipsec-client
           test -x /usr/libexec/gic-ipsec-client/gic-ipsec-helper
           command -v swanctl

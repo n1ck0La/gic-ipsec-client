@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 
+from gic_ipsec_client import __version__
 from gic_ipsec_client.helper import privileged
 
 
@@ -57,8 +58,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    raw_args = list(sys.argv[1:] if argv is None else argv)
+    if raw_args and Path(raw_args[0]).name == "gic-ipsec-helper":
+        raw_args = raw_args[1:]
+    if raw_args[:1] and raw_args[0] in {"--version", "-V"}:
+        print(f"gic-ipsec-helper {__version__}")
+        return 0
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(raw_args)
     uid = privileged.helper_uid()
 
     try:

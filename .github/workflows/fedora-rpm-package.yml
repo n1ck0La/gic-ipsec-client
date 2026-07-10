@@ -24,11 +24,19 @@ jobs:
       - name: Build RPM
         run: bash ./packaging/build-packages.sh
 
+      - name: Validate package version
+        run: |
+          bash ./scripts/validate-package-version.sh
+          VERSION="$(cat VERSION)"
+          PACKAGE_RELEASE="$(cat PACKAGE_RELEASE)"
+          test -f "dist/gic-ipsec-client-${VERSION}-${PACKAGE_RELEASE}.x86_64.rpm"
+          ! find dist -maxdepth 1 -type f -name '*0.1.0*' | grep -q .
+
       - name: Upload RPM artifact
         uses: actions/upload-artifact@v4
         with:
           name: gic-ipsec-client-rpm
-          path: dist/gic-ipsec-client-*-1.x86_64.rpm
+          path: dist/gic-ipsec-client-*.x86_64.rpm
           if-no-files-found: error
 
   install-smoke:
@@ -38,11 +46,28 @@ jobs:
       image: fedora:latest
 
     steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
       - name: Download RPM artifact
         uses: actions/download-artifact@v4
         with:
           name: gic-ipsec-client-rpm
           path: dist
+
+      - name: Validate RPM version metadata
+        run: |
+          VERSION="$(cat VERSION)"
+          PACKAGE_RELEASE="$(cat PACKAGE_RELEASE)"
+          rpm_file="$(ls dist/gic-ipsec-client-${VERSION}-${PACKAGE_RELEASE}*.rpm)"
+          test -n "$rpm_file"
+          test "$(rpm -qp --qf '%{VERSION}' "$rpm_file")" = "$VERSION"
+          rpm_release="$(rpm -qp --qf '%{RELEASE}' "$rpm_file")"
+          case "$rpm_release" in
+            "$PACKAGE_RELEASE"*) ;;
+            *) echo "Unexpected RPM release: $rpm_release" >&2; exit 1 ;;
+          esac
+          ! find dist -maxdepth 1 -type f -name '*0.1.0*' | grep -q .
 
       - name: Inspect RPM requirements
         run: |
@@ -61,7 +86,9 @@ jobs:
 
       - name: Verify installed commands
         run: |
-          gic-ipsec-client --version
+          VERSION="$(cat VERSION)"
+          test "$(gic-ipsec-client --version)" = "gic-ipsec-client ${VERSION}"
+          test "$(/usr/libexec/gic-ipsec-client/gic-ipsec-helper --version)" = "gic-ipsec-helper ${VERSION}"
           command -v gic-ipsec-client
           test -x /usr/libexec/gic-ipsec-client/gic-ipsec-helper
           command -v swanctl

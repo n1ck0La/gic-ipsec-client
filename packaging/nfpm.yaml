@@ -2,6 +2,7 @@ name: gic-ipsec-client
 arch: amd64
 platform: linux
 version: ${VERSION}
+release: ${PACKAGE_RELEASE}
 section: net
 priority: optional
 maintainer: GIC IPsec Client contributors

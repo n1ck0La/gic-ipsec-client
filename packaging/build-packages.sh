@@ -4,8 +4,19 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-VERSION="${VERSION:-$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])' 2>/dev/null || echo 0.1.0)}"
+VERSION="${VERSION:-$(tr -d '[:space:]' < VERSION)}"
+PACKAGE_RELEASE="${PACKAGE_RELEASE:-$(tr -d '[:space:]' < PACKAGE_RELEASE)}"
+RPM_RELEASE="${RPM_RELEASE:-$PACKAGE_RELEASE}"
+DEB_RELEASE="${DEB_RELEASE:-$PACKAGE_RELEASE}"
 NFPM="${NFPM:-nfpm}"
+
+if [ "${APPEND_GIT_RELEASE:-0}" = "1" ] && [ "${GITHUB_REF_TYPE:-}" != "tag" ]; then
+  short_sha="${GITHUB_SHA:-$(git rev-parse --short HEAD 2>/dev/null || true)}"
+  if [ -n "$short_sha" ]; then
+    RPM_RELEASE="${RPM_RELEASE}.git${short_sha}"
+    DEB_RELEASE="${DEB_RELEASE}+git${short_sha}"
+  fi
+fi
 
 if ! command -v "$NFPM" >/dev/null 2>&1; then
   cat >&2 <<'EOF'
@@ -26,7 +37,11 @@ build/package/venv/bin/python -m pip install .
 
 cp -a README.md pyproject.toml src build/package/app/
 
-VERSION="$VERSION" "$NFPM" pkg --config packaging/nfpm.yaml --packager deb \
-  --target "dist/gic-ipsec-client_${VERSION}_amd64.deb"
-VERSION="$VERSION" "$NFPM" pkg --config packaging/nfpm.yaml --packager rpm \
-  --target "dist/gic-ipsec-client-${VERSION}-1.x86_64.rpm"
+VERSION="$VERSION" PACKAGE_RELEASE="$DEB_RELEASE" "$NFPM" pkg \
+  --config packaging/nfpm.yaml \
+  --packager deb \
+  --target "dist/gic-ipsec-client_${VERSION}-${DEB_RELEASE}_amd64.deb"
+VERSION="$VERSION" PACKAGE_RELEASE="$RPM_RELEASE" "$NFPM" pkg \
+  --config packaging/nfpm.yaml \
+  --packager rpm \
+  --target "dist/gic-ipsec-client-${VERSION}-${RPM_RELEASE}.x86_64.rpm"
