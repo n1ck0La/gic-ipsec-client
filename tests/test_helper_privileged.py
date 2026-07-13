@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 from gic_ipsec_client.backend import commands
+from gic_ipsec_client.backend.models import VpnProfile
 from gic_ipsec_client.backend.swanctl_paths import SwanctlLayout
 from gic_ipsec_client.helper import privileged
 
@@ -30,7 +32,28 @@ def helper_runtime_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     layout.conf_dir.mkdir(parents=True)
     layout.profile_config_path(profile_id).write_text("connections {}\n", encoding="utf-8")
     monkeypatch.setattr(privileged, "CONNECT_LOCK_ROOT", tmp_path / "connect-locks")
+    monkeypatch.setattr(privileged, "CONNECT_REPORT_ROOT", tmp_path / "connect-reports")
+    monkeypatch.setattr(privileged, "RUNTIME_PROFILE_ROOT", tmp_path / "runtime-profiles")
     monkeypatch.setattr(privileged, "detect_swanctl_layout", lambda override="": layout)
+
+
+def _write_connect_request(request_path: Path, profile_id: str) -> None:
+    profile = VpnProfile(
+        id=profile_id,
+        profile_name="Fedora Test VPN",
+        gateway_fqdn_or_ip="vpn.example.com",
+        username="alice",
+        eap_identity="alice",
+        psk="test-psk",
+        password="test-password",
+        remote_routes=["10.44.0.0/16"],
+    )
+    payload = {
+        "action": "connect",
+        "profile": profile.to_dict(include_secrets=True),
+    }
+    request_path.write_text(json.dumps(payload), encoding="utf-8")
+    request_path.chmod(0o600)
 
 
 def test_initiate_is_blocked_when_child_is_not_loaded(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -42,7 +65,7 @@ def test_initiate_is_blocked_when_child_is_not_loaded(monkeypatch: pytest.Monkey
         if _is_swanctl_command(spec.args, "--load-all"):
             return Completed(0, "loaded")
         if _is_swanctl_command(spec.args, "--list-conns"):
-            return Completed(0, "other-connection:\n  children:\n    other-child:\n")
+            return Completed(0, "")
         raise AssertionError(f"unexpected command: {spec.args}")
 
     monkeypatch.setattr(commands, "run_command", fake_run)
@@ -62,6 +85,10 @@ def test_initiate_is_blocked_when_child_is_not_loaded(monkeypatch: pytest.Monkey
         _is_swanctl_command(args, "--initiate", "--child", f"gic-{profile_id}-child")
         for args in calls
     )
+    report = privileged._read_connect_report(profile_id)
+    assert report["list_conns_returncode"] == 0
+    assert report["list_conns_stdout"] == ""
+    assert report["selected_connection_loaded"] is False
 
 
 def test_disconnect_restores_dns_before_terminating_sa(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -548,7 +575,7 @@ def test_connect_requires_profile_file_before_service_preflight(
         lambda *args, **kwargs: preflight_calls.append(True) or {},
     )
 
-    with pytest.raises(privileged.HelperError, match="Generated profile file does not exist"):
+    with pytest.raises(privileged.HelperError, match=privileged.PROFILE_WRITE_FAILED_MESSAGE):
         privileged.connect_profile(profile_id)
 
     assert preflight_calls == []
@@ -571,7 +598,7 @@ def test_connect_from_request_renders_and_connects_in_one_helper_process(
     request_dir = tmp_path / "helper-requests"
     request_dir.mkdir()
     request_path = request_dir / f"{profile_id}.json"
-    request_path.write_text("{}", encoding="utf-8")
+    request_path.write_text('{"action": "connect"}', encoding="utf-8")
     request_path.chmod(0o600)
     uid = request_path.stat().st_uid
     calls: list[str] = []
@@ -582,11 +609,13 @@ def test_connect_from_request_renders_and_connects_in_one_helper_process(
         path: Path,
         *,
         uid: int,
+        config_root_override: str,
         expected_action: str,
         expected_profile_id: str,
     ) -> dict[str, str]:
         assert path == request_path
         assert uid == request_path.stat().st_uid
+        assert config_root_override == str(tmp_path / "swanctl")
         assert expected_action == "connect"
         assert expected_profile_id == profile_id
         calls.append("render")
@@ -615,6 +644,177 @@ def test_connect_from_request_renders_and_connects_in_one_helper_process(
         f"connect:{profile_id}:{tmp_path / 'swanctl'}:True",
     ]
     assert not request_path.exists()
+
+
+def test_empty_conf_d_writes_selected_profile_before_load_and_initiate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    profile_id = "00000000-0000-4000-8000-000000000001"
+    config_path = tmp_path / "swanctl" / "conf.d" / f"gic-{profile_id}.conf"
+    config_path.unlink()
+    assert list(config_path.parent.glob("*.conf")) == []
+    request_dir = tmp_path / "helper-requests"
+    request_dir.mkdir()
+    request_path = request_dir / f"{profile_id}.json"
+    _write_connect_request(request_path, profile_id)
+    uid = request_path.stat().st_uid
+    events: list[str] = []
+    list_sas_calls = {"count": 0}
+
+    def fake_preflight(*args: object, **kwargs: object) -> dict[str, object]:
+        events.append("service-and-vici")
+        assert config_path.is_file()
+        return {"selected_vici_uri": commands.FEDORA_VICI_URI}
+
+    def fake_run(spec: commands.CommandSpec) -> Completed:
+        assert config_path.is_file()
+        assert spec.args[1:3] == ("--uri", commands.FEDORA_VICI_URI)
+        if _is_swanctl_command(spec.args, "--load-all"):
+            events.append("load-all")
+            return Completed(0, "loaded connection")
+        if _is_swanctl_command(spec.args, "--list-conns"):
+            events.append("list-conns")
+            output = f"gic-{profile_id}:\n  children:\n    gic-{profile_id}-child:\n"
+            return Completed(0, output)
+        if _is_swanctl_command(spec.args, "--list-sas"):
+            events.append("list-sas")
+            list_sas_calls["count"] += 1
+            if list_sas_calls["count"] == 1:
+                return Completed(0, "")
+            return Completed(0, f"gic-{profile_id}: ESTABLISHED\n")
+        if "--initiate" in spec.args:
+            events.append("initiate")
+            assert events.index("service-and-vici") < events.index("load-all")
+            assert events.index("load-all") < events.index("initiate")
+            return Completed(0, "initiated")
+        raise AssertionError(f"unexpected command: {spec.args}")
+
+    monkeypatch.setattr(privileged, "request_dir_for_uid", lambda selected_uid: request_dir)
+    monkeypatch.setattr(privileged, "strongswan_preflight", fake_preflight)
+    monkeypatch.setattr(privileged, "_read_runtime_profile", lambda selected_id: None)
+    monkeypatch.setattr(commands, "run_command", fake_run)
+
+    assert privileged.connect_from_request(profile_id, uid=uid) == 0
+    assert config_path.is_file()
+    rendered_config = config_path.read_text(encoding="utf-8")
+    assert f"gic-{profile_id} {{" in rendered_config
+    assert f"gic-{profile_id}-child {{" in rendered_config
+    assert events == [
+        "service-and-vici",
+        "load-all",
+        "list-conns",
+        "list-sas",
+        "initiate",
+        "list-sas",
+    ]
+    assert not request_path.exists()
+
+
+def test_connect_from_request_stops_before_initiate_when_selected_connection_is_absent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    profile_id = "00000000-0000-4000-8000-000000000001"
+    config_path = tmp_path / "swanctl" / "conf.d" / f"gic-{profile_id}.conf"
+    config_path.unlink()
+    request_dir = tmp_path / "helper-requests"
+    request_dir.mkdir()
+    request_path = request_dir / f"{profile_id}.json"
+    _write_connect_request(request_path, profile_id)
+    uid = request_path.stat().st_uid
+    calls: list[tuple[str, ...]] = []
+
+    def fake_run(spec: commands.CommandSpec) -> Completed:
+        calls.append(spec.args)
+        assert config_path.is_file()
+        assert spec.args[1:3] == ("--uri", commands.FEDORA_VICI_URI)
+        if _is_swanctl_command(spec.args, "--load-all"):
+            return Completed(0, "loaded 0 connections, 0 unloaded")
+        if _is_swanctl_command(spec.args, "--list-conns"):
+            return Completed(0, "other-connection:\n  children:\n    other-child:\n")
+        raise AssertionError(f"unexpected command: {spec.args}")
+
+    monkeypatch.setattr(privileged, "request_dir_for_uid", lambda selected_uid: request_dir)
+    monkeypatch.setattr(
+        privileged,
+        "strongswan_preflight",
+        lambda *args, **kwargs: {"selected_vici_uri": commands.FEDORA_VICI_URI},
+    )
+    monkeypatch.setattr(commands, "run_command", fake_run)
+
+    with pytest.raises(
+        privileged.HelperError,
+        match="Profile was rendered but strongSwan did not load it",
+    ):
+        privileged.connect_from_request(profile_id, uid=uid)
+
+    assert config_path.is_file()
+    assert not any("--initiate" in args for args in calls)
+    assert not any("--list-sas" in args for args in calls)
+    report = privileged._read_connect_report(profile_id)
+    assert report["selected_profile_uuid"] == profile_id
+    assert report["generated_profile_file"] == str(config_path)
+    assert report["generated_profile_file_exists"] is True
+    assert report["conf_d_files"] == [str(config_path)]
+    assert report["selected_vici_uri"] == commands.FEDORA_VICI_URI
+    assert report["load_all_returncode"] == 0
+    assert report["list_conns_returncode"] == 0
+    assert report["selected_connection_loaded"] is False
+    assert not request_path.exists()
+
+
+def test_connect_from_request_fails_before_preflight_when_profile_write_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    profile_id = "00000000-0000-4000-8000-000000000001"
+    config_path = tmp_path / "swanctl" / "conf.d" / f"gic-{profile_id}.conf"
+    config_path.unlink()
+    request_dir = tmp_path / "helper-requests"
+    request_dir.mkdir()
+    request_path = request_dir / f"{profile_id}.json"
+    _write_connect_request(request_path, profile_id)
+    uid = request_path.stat().st_uid
+    preflight_calls: list[bool] = []
+
+    monkeypatch.setattr(privileged, "request_dir_for_uid", lambda selected_uid: request_dir)
+    monkeypatch.setattr(
+        privileged,
+        "render_profile_from_request",
+        lambda *args, **kwargs: {
+            "swanctl_config_root": str(tmp_path / "swanctl"),
+            "config_path": str(config_path),
+        },
+    )
+    monkeypatch.setattr(
+        privileged,
+        "strongswan_preflight",
+        lambda *args, **kwargs: preflight_calls.append(True) or {},
+    )
+
+    with pytest.raises(privileged.HelperError) as exc_info:
+        privileged.connect_from_request(profile_id, uid=uid)
+
+    assert str(exc_info.value) == privileged.PROFILE_WRITE_FAILED_MESSAGE
+    assert preflight_calls == []
+    report = privileged._read_connect_report(profile_id)
+    assert report["selected_profile_uuid"] == profile_id
+    assert report["generated_profile_file"] == str(config_path)
+    assert report["generated_profile_file_exists"] is False
+    assert report["conf_d_files"] == []
+    assert report["selected_connection_loaded"] is False
+    assert not request_path.exists()
+
+
+def test_fedora_connect_ignores_debian_config_root_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(privileged, "distro_family", lambda: "fedora")
+
+    assert privileged._effective_connect_config_root("/etc/swanctl") == str(
+        privileged.FEDORA_SWANCTL_ROOT
+    )
 
 
 def test_vici_socket_state_reports_listening_separately_from_file_existence() -> None:
@@ -830,6 +1030,14 @@ def test_swanctl_diagnostics_reports_loaded_connection_after_vici(
     profile_path = tmp_path / "conf.d" / f"gic-{profile_id}.conf"
     profile_path.parent.mkdir()
     profile_path.write_text("connections {}\n", encoding="utf-8")
+    privileged._write_connect_report(
+        profile_id,
+        {
+            "load_all_returncode": 0,
+            "load_all_stdout": "loaded connection",
+            "load_all_stderr": "",
+        },
+    )
 
     def fake_run(spec: commands.CommandSpec) -> Completed:
         if _is_swanctl_command(spec.args, "--list-conns"):
@@ -874,12 +1082,18 @@ def test_swanctl_diagnostics_reports_loaded_connection_after_vici(
 
     payload = privileged.swanctl_diagnostics(profile_id=profile_id)
 
+    assert payload["selected_profile_uuid"] == profile_id
     assert payload["generated_connection_loaded"] is True
     assert payload["selected_strongswan_service"] == "strongswan.service"
     assert payload["vici_socket_path"] == "/run/charon.vici"
     assert payload["selected_vici_uri"] == commands.FEDORA_VICI_URI
     assert payload["profile_file_path"] == str(profile_path)
     assert payload["profile_file_exists"] is True
+    assert payload["conf_d_files"] == [str(profile_path)]
+    assert payload["load_all_returncode"] == 0
+    assert payload["load_all_stdout"] == "loaded connection"
+    assert payload["load_all_stderr"] == ""
+    assert payload["selected_connection_loaded"] is True
     assert payload["list_conns_returncode"] == 0
     assert payload["list_conns_stderr"] == ""
     assert f"gic-{profile_id}-child" in payload["list_conns_stdout"]

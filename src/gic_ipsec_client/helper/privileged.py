@@ -32,8 +32,11 @@ from gic_ipsec_client.backend.resolved import (
     reconnect_network_interface as reconnect_saved_network_interface,
 )
 from gic_ipsec_client.backend.swanctl_paths import (
+    FEDORA_SWANCTL_ROOT,
     KNOWN_SWANCTL_ROOTS,
+    SwanctlLayout,
     detect_swanctl_layout,
+    distro_family,
     profile_loaded_in_list_conns,
     swanctl_files_by_root,
 )
@@ -50,9 +53,11 @@ class HelperError(RuntimeError):
 
 RUNTIME_PROFILE_ROOT = Path("/run/gic-ipsec-client/profiles")
 CONNECT_LOCK_ROOT = Path("/run/gic-ipsec-client/connect-locks")
+CONNECT_REPORT_ROOT = Path("/run/gic-ipsec-client/connect-reports")
 VICI_WAIT_ATTEMPTS = 20
 VICI_WAIT_INTERVAL_SECONDS = 0.5
 SAFELY_STOPPED_SERVICE_STATES = {"inactive", "failed", "not found"}
+PROFILE_WRITE_FAILED_MESSAGE = "Generated strongSwan profile file was not written."
 
 
 def _path_is_socket(path: Path) -> bool:
@@ -613,9 +618,94 @@ def _delete_runtime_profile(profile_id: str) -> None:
         path.unlink()
 
 
+def _connect_report_path(profile_id: str) -> Path:
+    validate_uuid(profile_id)
+    return CONNECT_REPORT_ROOT / f"{profile_id}.json"
+
+
+def _write_connect_report(profile_id: str, payload: Mapping[str, object]) -> None:
+    _atomic_write(
+        _connect_report_path(profile_id),
+        json.dumps(dict(payload), indent=2, sort_keys=True),
+        mode=0o600,
+    )
+
+
+def _read_connect_report(profile_id: str) -> dict[str, object]:
+    path = _connect_report_path(profile_id)
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _delete_connect_report(profile_id: str) -> None:
+    path = _connect_report_path(profile_id)
+    path.unlink(missing_ok=True)
+
+
 def _request_config_root_override(payload: Mapping[str, object]) -> str:
     value = payload.get("swanctl_config_root", "")
     return str(value or "")
+
+
+def _effective_connect_config_root(config_root_override: str = "") -> str:
+    if distro_family() == "fedora":
+        return str(FEDORA_SWANCTL_ROOT)
+    return config_root_override
+
+
+def _connect_vici_uri(preflight: Mapping[str, object]) -> str:
+    selected = str(preflight.get("selected_vici_uri", "") or "")
+    if selected:
+        return selected
+    return commands.FEDORA_VICI_URI if distro_family() == "fedora" else ""
+
+
+def _conf_d_file_listing(conf_dir: Path) -> list[str]:
+    try:
+        return sorted(str(path) for path in conf_dir.glob("*.conf") if path.is_file())
+    except OSError as exc:
+        return [f"<could not list {conf_dir}: {exc}>"]
+
+
+def _new_connect_report(profile_id: str, layout: SwanctlLayout) -> dict[str, object]:
+    profile_path = layout.profile_config_path(profile_id)
+    return {
+        "selected_profile_uuid": profile_id,
+        "generated_profile_file": str(profile_path),
+        "generated_profile_file_exists": profile_path.is_file(),
+        "conf_d_files": _conf_d_file_listing(layout.conf_dir),
+        "selected_vici_uri": _connect_vici_uri({}),
+        "load_all_returncode": None,
+        "load_all_stdout": "",
+        "load_all_stderr": "",
+        "list_conns_returncode": None,
+        "list_conns_stdout": "",
+        "list_conns_stderr": "",
+        "selected_connection_loaded": False,
+    }
+
+
+def _record_generated_profile_state(
+    profile_id: str,
+    report: dict[str, object],
+    layout: SwanctlLayout,
+) -> bool:
+    profile_path = layout.profile_config_path(profile_id)
+    exists = profile_path.is_file()
+    report.update(
+        {
+            "generated_profile_file": str(profile_path),
+            "generated_profile_file_exists": exists,
+            "conf_d_files": _conf_d_file_listing(layout.conf_dir),
+        }
+    )
+    _write_connect_report(profile_id, report)
+    return exists
 
 
 def render_profile_from_request(
@@ -636,6 +726,8 @@ def render_profile_from_request(
     if expected_profile_id and profile.id != expected_profile_id:
         raise HelperError("Request profile UUID does not match the connect command.")
     override = config_root_override or _request_config_root_override(payload)
+    if expected_action == "connect":
+        override = _effective_connect_config_root(override)
     layout = detect_swanctl_layout(override=override)
     rendered = render_profile_files(profile, layout=layout)
     rendered.config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -664,6 +756,7 @@ def delete_profile(profile_id: str, *, config_root_override: str = "") -> list[s
         )
     ]
     _delete_runtime_profile(profile_id)
+    _delete_connect_report(profile_id)
     revert_resolved_dns(profile_id, run_command=commands.run_command)
     cleanup_dns_apply_report(profile_id)
     return deleted
@@ -671,7 +764,7 @@ def delete_profile(profile_id: str, *, config_root_override: str = "") -> list[s
 
 def load_profile() -> int:
     preflight = strongswan_preflight()
-    vici_uri = str(preflight.get("selected_vici_uri", "") or "")
+    vici_uri = _connect_vici_uri(preflight)
     return commands.run_command(commands.swanctl_load_all(vici_uri=vici_uri)).returncode
 
 
@@ -680,17 +773,33 @@ def connect_from_request(profile_id: str, *, uid: int) -> int:
     with _connect_in_progress_guard(profile_id):
         request_path = request_dir_for_uid(uid) / f"{profile_id}.json"
         validated_request = validate_request_path(request_path, uid=uid)
+        request_payload = read_helper_request_payload(
+            validated_request,
+            uid=uid,
+            expected_action="connect",
+        )
+        effective_root = _effective_connect_config_root(
+            _request_config_root_override(request_payload)
+        )
+        layout = detect_swanctl_layout(override=effective_root)
+        report = _new_connect_report(profile_id, layout)
+        _write_connect_report(profile_id, report)
         try:
-            rendered = render_profile_from_request(
-                validated_request,
-                uid=uid,
-                expected_action="connect",
-                expected_profile_id=profile_id,
-            )
+            try:
+                rendered = render_profile_from_request(
+                    validated_request,
+                    uid=uid,
+                    config_root_override=str(layout.root),
+                    expected_action="connect",
+                    expected_profile_id=profile_id,
+                )
+            except OSError as exc:
+                if not _record_generated_profile_state(profile_id, report, layout):
+                    raise HelperError(PROFILE_WRITE_FAILED_MESSAGE) from exc
+                raise
             config_root = str(rendered.get("swanctl_config_root", "") or "")
-            config_path = Path(str(rendered.get("config_path", "") or ""))
-            if not config_path.is_file():
-                raise HelperError(f"Generated profile file does not exist: {config_path}")
+            if not _record_generated_profile_state(profile_id, report, layout):
+                raise HelperError(PROFILE_WRITE_FAILED_MESSAGE)
             return _connect_profile(profile_id, config_root_override=config_root)
         finally:
             try:
@@ -709,26 +818,48 @@ def _connect_profile(profile_id: str, *, config_root_override: str = "") -> int:
     validate_uuid(profile_id)
     connection_name = f"{CONNECTION_PREFIX}{profile_id}"
     child_name = f"{connection_name}-child"
-    layout = detect_swanctl_layout(override=config_root_override)
+    effective_root = _effective_connect_config_root(config_root_override)
+    layout = detect_swanctl_layout(override=effective_root)
     profile_path = layout.profile_config_path(profile_id)
+    report = _new_connect_report(profile_id, layout)
+    _write_connect_report(profile_id, report)
     if not profile_path.is_file():
-        raise HelperError(f"Generated profile file does not exist: {profile_path}")
+        raise HelperError(PROFILE_WRITE_FAILED_MESSAGE)
     preflight = strongswan_preflight()
-    vici_uri = str(preflight.get("selected_vici_uri", "") or "")
+    vici_uri = _connect_vici_uri(preflight)
+    report["selected_vici_uri"] = vici_uri
     load_completed = commands.run_command(commands.swanctl_load_all(vici_uri=vici_uri))
+    report.update(
+        {
+            "load_all_returncode": load_completed.returncode,
+            "load_all_stdout": load_completed.stdout or "",
+            "load_all_stderr": load_completed.stderr or "",
+        }
+    )
+    _write_connect_report(profile_id, report)
     if load_completed.returncode != 0:
         raise HelperError(_completed_message(load_completed) or "swanctl --load-all failed.")
 
     list_completed = commands.run_command(commands.swanctl_list_conns(vici_uri=vici_uri))
-    if list_completed.returncode != 0:
-        raise HelperError(_completed_message(list_completed) or "swanctl --list-conns failed.")
-
     list_output = (list_completed.stdout or "") + (list_completed.stderr or "")
-    if not profile_loaded_in_list_conns(
+    selected_loaded = profile_loaded_in_list_conns(
         list_output,
         connection_name=connection_name,
         child_name=child_name,
-    ):
+    )
+    report.update(
+        {
+            "list_conns_returncode": list_completed.returncode,
+            "list_conns_stdout": list_completed.stdout or "",
+            "list_conns_stderr": list_completed.stderr or "",
+            "selected_connection_loaded": selected_loaded,
+        }
+    )
+    _write_connect_report(profile_id, report)
+    if list_completed.returncode != 0:
+        raise HelperError(_completed_message(list_completed) or "swanctl --list-conns failed.")
+
+    if not selected_loaded:
         raise HelperError(
             "Profile was rendered but strongSwan did not load it. "
             "Check swanctl config root and include paths."
@@ -783,7 +914,7 @@ def disconnect_profile(profile_id: str) -> int:
         cleanup_on_success=False,
     )
     preflight = strongswan_preflight()
-    vici_uri = str(preflight.get("selected_vici_uri", "") or "")
+    vici_uri = _connect_vici_uri(preflight)
     completed = commands.run_command(
         commands.swanctl_terminate(
             f"{CONNECTION_PREFIX}{profile_id}",
@@ -846,7 +977,7 @@ def status_profile(profile_id: str) -> str:
         preflight = strongswan_preflight()
     except HelperError:
         return "Failed"
-    vici_uri = str(preflight.get("selected_vici_uri", "") or "")
+    vici_uri = _connect_vici_uri(preflight)
     completed = commands.run_command(commands.swanctl_list_sas(vici_uri=vici_uri))
     output = (completed.stdout or "") + (completed.stderr or "")
     if completed.returncode != 0:
@@ -861,13 +992,13 @@ def _selected_sa_active(profile_id: str, output: str) -> bool:
 
 def list_sas() -> str:
     preflight = strongswan_preflight()
-    vici_uri = str(preflight.get("selected_vici_uri", "") or "")
+    vici_uri = _connect_vici_uri(preflight)
     return _run_swanctl_for_output(commands.swanctl_list_sas(vici_uri=vici_uri))
 
 
 def list_conns() -> str:
     preflight = strongswan_preflight()
-    vici_uri = str(preflight.get("selected_vici_uri", "") or "")
+    vici_uri = _connect_vici_uri(preflight)
     return _run_swanctl_for_output(commands.swanctl_list_conns(vici_uri=vici_uri))
 
 
@@ -878,11 +1009,12 @@ def swanctl_diagnostics(
 ) -> dict[str, object]:
     if profile_id:
         validate_uuid(profile_id)
-    layout = detect_swanctl_layout(override=config_root_override)
+    effective_root = _effective_connect_config_root(config_root_override)
+    layout = detect_swanctl_layout(override=effective_root)
     resolved_swanctl_path = commands.resolve_swanctl_path() or ""
     swanctl_rpm_owner = _rpm_owner_for_path(resolved_swanctl_path)
     preflight = strongswan_preflight(raise_on_failure=False, ensure_service=False)
-    vici_uri = str(preflight.get("selected_vici_uri", "") or "")
+    vici_uri = _connect_vici_uri(preflight)
     if preflight.get("vici_usable"):
         list_conns_completed = commands.run_command(
             commands.swanctl_list_conns(vici_uri=vici_uri)
@@ -922,7 +1054,9 @@ def swanctl_diagnostics(
         else None
     )
     dns_state_snapshot = load_resolved_plan(profile_id) if profile_id else None
+    connect_report = _read_connect_report(profile_id) if profile_id else {}
     return {
+        "selected_profile_uuid": profile_id or "",
         "command_v_swanctl": commands.command_v("swanctl"),
         "resolved_swanctl_path": resolved_swanctl_path,
         "swanctl_rpm_owner": swanctl_rpm_owner,
@@ -1010,11 +1144,16 @@ def swanctl_diagnostics(
         "systemctl_cat_strongswan_include_lines": layout.systemctl_include_lines,
         "startup_log_include_lines": layout.log_include_lines,
         "files_under_roots": swanctl_files_by_root(),
+        "conf_d_files": _conf_d_file_listing(layout.conf_dir),
         "generated_profile_file": str(profile_config) if profile_config else "",
         "generated_profile_file_exists": bool(profile_config and profile_config.exists()),
         "profile_file_path": str(profile_config) if profile_config else "",
         "profile_file_exists": bool(profile_config and profile_config.exists()),
         "generated_connection_loaded": loaded,
+        "selected_connection_loaded": loaded,
+        "load_all_returncode": connect_report.get("load_all_returncode"),
+        "load_all_stdout": connect_report.get("load_all_stdout", ""),
+        "load_all_stderr": connect_report.get("load_all_stderr", ""),
         "list_conns_returncode": list_conns_completed.returncode,
         "list_conns_stdout": getattr(list_conns_completed, "stdout", "") or "",
         "list_conns_stderr": getattr(list_conns_completed, "stderr", "") or "",

@@ -497,6 +497,7 @@ def collect_diagnostics(
         "dns_state_snapshot_saved": bool(swanctl_diagnostics.get("dns_state_snapshot", {})),
     }
     summary["swanctl"] = {
+        "selected_profile_uuid": swanctl_diagnostics.get("selected_profile_uuid", ""),
         "command_v_swanctl": swanctl_diagnostics.get("command_v_swanctl", ""),
         "resolved_swanctl_path": swanctl_diagnostics.get("resolved_swanctl_path", ""),
         "rpm_owner": swanctl_diagnostics.get("swanctl_rpm_owner", ""),
@@ -522,6 +523,16 @@ def collect_diagnostics(
         "profile_file_path": swanctl_diagnostics.get("profile_file_path", ""),
         "profile_file_exists": swanctl_diagnostics.get("profile_file_exists", False),
         "selected_vici_uri": swanctl_diagnostics.get("selected_vici_uri", ""),
+        "conf_d_files": swanctl_diagnostics.get("conf_d_files", []),
+        "load_all_returncode": swanctl_diagnostics.get("load_all_returncode"),
+        "load_all_stdout": swanctl_diagnostics.get("load_all_stdout", ""),
+        "load_all_stderr": swanctl_diagnostics.get("load_all_stderr", ""),
+        "list_conns_returncode": swanctl_diagnostics.get("list_conns_returncode"),
+        "list_conns_stdout": swanctl_diagnostics.get("list_conns_stdout", ""),
+        "list_conns_stderr": swanctl_diagnostics.get("list_conns_stderr", ""),
+        "selected_connection_loaded": swanctl_diagnostics.get(
+            "selected_connection_loaded"
+        ),
         "generated_connection_loaded": swanctl_diagnostics.get("generated_connection_loaded"),
         "helper_error": swanctl_diagnostics.get("error", ""),
     }

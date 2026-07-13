@@ -25,6 +25,9 @@ nmcli device show
   A `charon.vici` file by itself can be stale and does not prove that VICI works.
 - On Fedora, when `/run/strongswan/charon.vici` exists, GIC uses
   `swanctl --uri unix:///run/strongswan/charon.vici ...` for every VICI command.
+- Fedora Connect always writes the selected profile to
+  `/etc/strongswan/swanctl/conf.d/gic-<uuid>.conf` before service startup or
+  `swanctl --load-all`, even if an older saved setting selected `/etc/swanctl`.
 - GIC diagnostics separately report file existence, `ss -lx` listening state,
   and `swanctl --list-conns` connectivity for these paths:
   `/run/strongswan/charon.vici`, `/var/run/strongswan/charon.vici`,
