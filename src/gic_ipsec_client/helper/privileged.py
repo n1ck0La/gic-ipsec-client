@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import stat
 import subprocess
 import tempfile
 import time
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from pathlib import Path
 
 from gic_ipsec_client.backend import commands
@@ -47,8 +49,10 @@ class HelperError(RuntimeError):
 
 
 RUNTIME_PROFILE_ROOT = Path("/run/gic-ipsec-client/profiles")
+CONNECT_LOCK_ROOT = Path("/run/gic-ipsec-client/connect-locks")
 VICI_WAIT_ATTEMPTS = 20
 VICI_WAIT_INTERVAL_SECONDS = 0.5
+SAFELY_STOPPED_SERVICE_STATES = {"inactive", "failed", "not found"}
 
 
 def _path_is_socket(path: Path) -> bool:
@@ -117,6 +121,11 @@ def _vici_socket_state(
         "vici_socket_listening": bool(listening_paths),
         "vici_socket_available": False,
         "vici_usable": False,
+        "selected_vici_uri": (
+            commands.FEDORA_VICI_URI
+            if exists_by_path.get(str(commands.FEDORA_VICI_SOCKET_PATH), False)
+            else ""
+        ),
         "vici_socket_path": vici_socket_path,
         "vici_socket_candidates": candidates,
         "vici_listening_paths": listening_paths,
@@ -154,6 +163,84 @@ def _service_active_state(
     return "active" if completed.returncode == 0 else "inactive"
 
 
+def _services_safely_stopped(*states: str) -> bool:
+    return all(state in SAFELY_STOPPED_SERVICE_STATES for state in states)
+
+
+def _stop_services_and_cleanup_vici(
+    payload: dict[str, object],
+    *,
+    run_command: object,
+) -> bool:
+    run_command_fn = run_command if callable(run_command) else commands.run_command
+    payload["vici_recovery_attempted"] = True
+    try:
+        completed = run_command_fn(
+            commands.systemctl_stop_services(
+                commands.STRONGSWAN_SERVICE,
+                commands.STRONGSWAN_STARTER_SERVICE,
+            )
+        )
+        payload["vici_recovery_stop_returncode"] = completed.returncode
+        payload["vici_recovery_stop_output"] = _completed_message(completed)
+    except (OSError, TimeoutError, subprocess.TimeoutExpired) as exc:
+        payload["vici_recovery_stop_returncode"] = 127
+        payload["vici_recovery_stop_output"] = str(exc)
+
+    strongswan_state = _service_active_state(
+        commands.STRONGSWAN_SERVICE,
+        run_command=run_command_fn,
+    )
+    starter_state = _service_active_state(
+        commands.STRONGSWAN_STARTER_SERVICE,
+        run_command=run_command_fn,
+    )
+    payload["vici_recovery_strongswan_state"] = strongswan_state
+    payload["vici_recovery_starter_state"] = starter_state
+    if not _services_safely_stopped(strongswan_state, starter_state):
+        payload["vici_recovery_cleanup_skipped"] = (
+            "VICI socket cleanup skipped because both strongSwan services are not stopped."
+        )
+        return False
+
+    deleted: list[str] = []
+    errors: list[str] = []
+    for path in commands.VICI_SOCKET_PATHS:
+        try:
+            existed = os.path.lexists(path)
+            path.unlink(missing_ok=True)
+            if existed:
+                deleted.append(str(path))
+        except OSError as exc:
+            errors.append(f"Could not remove stale VICI socket {path}: {exc}")
+    payload["vici_recovery_deleted_paths"] = deleted
+    payload["vici_recovery_cleanup_errors"] = errors
+    return not errors
+
+
+@contextmanager
+def _connect_in_progress_guard(profile_id: str) -> Iterator[None]:
+    CONNECT_LOCK_ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(CONNECT_LOCK_ROOT, 0o700)
+    lock_path = CONNECT_LOCK_ROOT / f"{profile_id}.lock"
+    flags = os.O_CREAT | os.O_RDWR
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(lock_path, flags, 0o600)
+    try:
+        os.chmod(lock_path, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise HelperError(
+                "A connection attempt for this profile is already in progress."
+            ) from exc
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
 def detect_strongswan_service(
     *,
     run_command: object | None = None,
@@ -185,7 +272,12 @@ def _wait_for_usable_vici(
     sleep_fn = sleep if callable(sleep) else time.sleep
     for attempt in range(attempts):
         payload.update(_vici_socket_state(socket_exists_fn, run_command=run_command))
-        payload.update(_swanctl_list_conns_state(run_command=run_command))
+        payload.update(
+            _swanctl_list_conns_state(
+                run_command=run_command,
+                vici_uri=str(payload.get("selected_vici_uri", "") or ""),
+            )
+        )
         usable = bool(payload["swanctl_list_conns_ok"])
         payload["vici_socket_available"] = usable
         payload["vici_usable"] = usable
@@ -198,10 +290,11 @@ def _wait_for_usable_vici(
 def _swanctl_list_conns_state(
     *,
     run_command: object,
+    vici_uri: str = "",
 ) -> dict[str, object]:
     run_command_fn = run_command if callable(run_command) else commands.run_command
     try:
-        completed = run_command_fn(commands.swanctl_list_conns())
+        completed = run_command_fn(commands.swanctl_list_conns(vici_uri=vici_uri))
     except (OSError, TimeoutError, subprocess.TimeoutExpired) as exc:
         return {
             "preflight_list_conns_returncode": 127,
@@ -257,6 +350,15 @@ def strongswan_preflight(
         "preflight_list_conns_output": "",
         "swanctl_list_conns_ok": False,
         "vici_usable": False,
+        "selected_vici_uri": "",
+        "vici_recovery_attempted": False,
+        "vici_recovery_stop_returncode": None,
+        "vici_recovery_stop_output": "",
+        "vici_recovery_deleted_paths": [],
+        "vici_recovery_cleanup_errors": [],
+        "vici_recovery_cleanup_skipped": "",
+        "vici_recovery_start_returncode": None,
+        "vici_recovery_start_output": "",
         "preflight_error": "",
     }
     payload.update(detect_strongswan_service(run_command=run_command_fn))
@@ -308,6 +410,18 @@ def strongswan_preflight(
         return payload
 
     if ensure_service:
+        if starter_active and not _stop_services_and_cleanup_vici(
+            payload,
+            run_command=run_command_fn,
+        ):
+            message = str(payload.get("vici_recovery_cleanup_skipped") or "").strip() or (
+                "Could not safely stop both strongSwan services before VICI cleanup."
+            )
+            payload["preflight_error"] = message
+            if raise_on_failure:
+                raise HelperError(message)
+            return payload
+
         try:
             disable_completed = run_command_fn(
                 commands.systemctl_disable_now(commands.STRONGSWAN_STARTER_SERVICE)
@@ -356,8 +470,44 @@ def strongswan_preflight(
     if payload["swanctl_list_conns_ok"]:
         return payload
 
-    payload["preflight_error"] = (
-        str(payload.get("preflight_list_conns_output") or "") or commands.VICI_UNAVAILABLE_MESSAGE
+    if ensure_service and _stop_services_and_cleanup_vici(
+        payload,
+        run_command=run_command_fn,
+    ):
+        try:
+            start_completed = run_command_fn(
+                commands.systemctl_start(commands.STRONGSWAN_SERVICE)
+            )
+            payload["vici_recovery_start_returncode"] = start_completed.returncode
+            payload["vici_recovery_start_output"] = _completed_message(start_completed)
+        except (OSError, TimeoutError, subprocess.TimeoutExpired) as exc:
+            payload["vici_recovery_start_returncode"] = 127
+            payload["vici_recovery_start_output"] = str(exc)
+        if payload["vici_recovery_start_returncode"] == 0:
+            _wait_for_usable_vici(
+                payload,
+                socket_exists=socket_exists_fn,
+                run_command=run_command_fn,
+                sleep=sleep_fn,
+            )
+            if payload["swanctl_list_conns_ok"]:
+                payload["strongswan_service_state"] = _service_active_state(
+                    commands.STRONGSWAN_SERVICE,
+                    run_command=run_command_fn,
+                )
+                payload["strongswan_service_active_state"] = payload[
+                    "strongswan_service_state"
+                ]
+                return payload
+
+    recovery_start_error = (
+        str(payload.get("vici_recovery_start_output") or "")
+        if payload.get("vici_recovery_start_returncode") not in {None, 0}
+        else ""
+    )
+    payload["preflight_error"] = recovery_start_error or (
+        str(payload.get("preflight_list_conns_output") or "")
+        or commands.VICI_UNAVAILABLE_MESSAGE
     )
     if not payload["preflight_error"]:
         payload["preflight_error"] = commands.VICI_UNAVAILABLE_MESSAGE
@@ -520,39 +670,56 @@ def delete_profile(profile_id: str, *, config_root_override: str = "") -> list[s
 
 
 def load_profile() -> int:
-    strongswan_preflight()
-    return commands.run_command(commands.swanctl_load_all()).returncode
+    preflight = strongswan_preflight()
+    vici_uri = str(preflight.get("selected_vici_uri", "") or "")
+    return commands.run_command(commands.swanctl_load_all(vici_uri=vici_uri)).returncode
 
 
 def connect_from_request(profile_id: str, *, uid: int) -> int:
     validate_uuid(profile_id)
-    request_path = request_dir_for_uid(uid) / f"{profile_id}.json"
-    validated_request = validate_request_path(request_path, uid=uid)
-    try:
-        render_profile_from_request(
-            validated_request,
-            uid=uid,
-            expected_action="connect",
-            expected_profile_id=profile_id,
-        )
-        return connect_profile(profile_id)
-    finally:
+    with _connect_in_progress_guard(profile_id):
+        request_path = request_dir_for_uid(uid) / f"{profile_id}.json"
+        validated_request = validate_request_path(request_path, uid=uid)
         try:
-            validated_request.unlink(missing_ok=True)
-        except OSError:
-            pass
+            rendered = render_profile_from_request(
+                validated_request,
+                uid=uid,
+                expected_action="connect",
+                expected_profile_id=profile_id,
+            )
+            config_root = str(rendered.get("swanctl_config_root", "") or "")
+            config_path = Path(str(rendered.get("config_path", "") or ""))
+            if not config_path.is_file():
+                raise HelperError(f"Generated profile file does not exist: {config_path}")
+            return _connect_profile(profile_id, config_root_override=config_root)
+        finally:
+            try:
+                validated_request.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def connect_profile(profile_id: str, *, config_root_override: str = "") -> int:
     validate_uuid(profile_id)
+    with _connect_in_progress_guard(profile_id):
+        return _connect_profile(profile_id, config_root_override=config_root_override)
+
+
+def _connect_profile(profile_id: str, *, config_root_override: str = "") -> int:
+    validate_uuid(profile_id)
     connection_name = f"{CONNECTION_PREFIX}{profile_id}"
     child_name = f"{connection_name}-child"
-    strongswan_preflight()
-    load_completed = commands.run_command(commands.swanctl_load_all())
+    layout = detect_swanctl_layout(override=config_root_override)
+    profile_path = layout.profile_config_path(profile_id)
+    if not profile_path.is_file():
+        raise HelperError(f"Generated profile file does not exist: {profile_path}")
+    preflight = strongswan_preflight()
+    vici_uri = str(preflight.get("selected_vici_uri", "") or "")
+    load_completed = commands.run_command(commands.swanctl_load_all(vici_uri=vici_uri))
     if load_completed.returncode != 0:
         raise HelperError(_completed_message(load_completed) or "swanctl --load-all failed.")
 
-    list_completed = commands.run_command(commands.swanctl_list_conns())
+    list_completed = commands.run_command(commands.swanctl_list_conns(vici_uri=vici_uri))
     if list_completed.returncode != 0:
         raise HelperError(_completed_message(list_completed) or "swanctl --list-conns failed.")
 
@@ -566,15 +733,30 @@ def connect_profile(profile_id: str, *, config_root_override: str = "") -> int:
             "Profile was rendered but strongSwan did not load it. "
             "Check swanctl config root and include paths."
         )
-    initiate_completed = commands.run_command(commands.swanctl_initiate(child_name))
-    if initiate_completed.returncode != 0:
-        raise HelperError(_completed_message(initiate_completed) or "swanctl --initiate failed.")
-    list_sas_completed = commands.run_command(commands.swanctl_list_sas())
-    list_sas_output = _completed_message(list_sas_completed)
-    if list_sas_completed.returncode != 0:
-        raise HelperError(list_sas_output or "swanctl --list-sas failed.")
-    if not _selected_sa_active(profile_id, list_sas_output):
-        raise HelperError("Selected IKE_SA is not active after initiation.")
+    existing_sas_completed = commands.run_command(
+        commands.swanctl_list_sas(vici_uri=vici_uri)
+    )
+    existing_sas_output = _completed_message(existing_sas_completed)
+    if existing_sas_completed.returncode != 0:
+        raise HelperError(existing_sas_output or "swanctl --list-sas failed.")
+    if _selected_sa_active(profile_id, existing_sas_output):
+        list_sas_output = existing_sas_output
+    else:
+        initiate_completed = commands.run_command(
+            commands.swanctl_initiate(child_name, vici_uri=vici_uri)
+        )
+        if initiate_completed.returncode != 0:
+            raise HelperError(
+                _completed_message(initiate_completed) or "swanctl --initiate failed."
+            )
+        list_sas_completed = commands.run_command(
+            commands.swanctl_list_sas(vici_uri=vici_uri)
+        )
+        list_sas_output = _completed_message(list_sas_completed)
+        if list_sas_completed.returncode != 0:
+            raise HelperError(list_sas_output or "swanctl --list-sas failed.")
+        if not _selected_sa_active(profile_id, list_sas_output):
+            raise HelperError("Selected IKE_SA is not active after initiation.")
     runtime_profile = _read_runtime_profile(profile_id)
     if runtime_profile is None:
         return 0
@@ -600,8 +782,14 @@ def disconnect_profile(profile_id: str) -> int:
         run_command=commands.run_command,
         cleanup_on_success=False,
     )
-    strongswan_preflight()
-    completed = commands.run_command(commands.swanctl_terminate(f"{CONNECTION_PREFIX}{profile_id}"))
+    preflight = strongswan_preflight()
+    vici_uri = str(preflight.get("selected_vici_uri", "") or "")
+    completed = commands.run_command(
+        commands.swanctl_terminate(
+            f"{CONNECTION_PREFIX}{profile_id}",
+            vici_uri=vici_uri,
+        )
+    )
     warnings = _dns_warning_lines(profile_id)
     if completed.returncode != 0:
         warnings.append(_completed_message(completed) or "swanctl --terminate failed.")
@@ -611,20 +799,25 @@ def disconnect_profile(profile_id: str) -> int:
         run_command=commands.run_command,
     )
     warnings.extend(post_flush_warnings)
-    list_sas_completed = commands.run_command(commands.swanctl_list_sas())
+    list_sas_completed = commands.run_command(commands.swanctl_list_sas(vici_uri=vici_uri))
     list_sas_output = _completed_message(list_sas_completed)
     sa_errors: list[str] = []
     if list_sas_completed.returncode != 0:
         sa_errors.append(list_sas_output or "swanctl --list-sas failed.")
     elif f"{LEGACY_CONNECTION_PREFIX}{profile_id}" in list_sas_output:
         legacy_completed = commands.run_command(
-            commands.swanctl_terminate(f"{LEGACY_CONNECTION_PREFIX}{profile_id}")
+            commands.swanctl_terminate(
+                f"{LEGACY_CONNECTION_PREFIX}{profile_id}",
+                vici_uri=vici_uri,
+            )
         )
         if legacy_completed.returncode != 0:
             warnings.append(
                 _completed_message(legacy_completed) or "legacy swanctl --terminate failed."
             )
-        list_sas_completed = commands.run_command(commands.swanctl_list_sas())
+        list_sas_completed = commands.run_command(
+            commands.swanctl_list_sas(vici_uri=vici_uri)
+        )
         list_sas_output = _completed_message(list_sas_completed)
         if list_sas_completed.returncode != 0:
             sa_errors.append(list_sas_output or "swanctl --list-sas failed.")
@@ -650,10 +843,11 @@ def reconnect_network_interface(profile_id: str) -> int:
 def status_profile(profile_id: str) -> str:
     validate_uuid(profile_id)
     try:
-        strongswan_preflight()
+        preflight = strongswan_preflight()
     except HelperError:
         return "Failed"
-    completed = commands.run_command(commands.swanctl_list_sas())
+    vici_uri = str(preflight.get("selected_vici_uri", "") or "")
+    completed = commands.run_command(commands.swanctl_list_sas(vici_uri=vici_uri))
     output = (completed.stdout or "") + (completed.stderr or "")
     if completed.returncode != 0:
         return "Failed"
@@ -666,11 +860,15 @@ def _selected_sa_active(profile_id: str, output: str) -> bool:
 
 
 def list_sas() -> str:
-    return _run_swanctl_for_output(commands.swanctl_list_sas())
+    preflight = strongswan_preflight()
+    vici_uri = str(preflight.get("selected_vici_uri", "") or "")
+    return _run_swanctl_for_output(commands.swanctl_list_sas(vici_uri=vici_uri))
 
 
 def list_conns() -> str:
-    return _run_swanctl_for_output(commands.swanctl_list_conns())
+    preflight = strongswan_preflight()
+    vici_uri = str(preflight.get("selected_vici_uri", "") or "")
+    return _run_swanctl_for_output(commands.swanctl_list_conns(vici_uri=vici_uri))
 
 
 def swanctl_diagnostics(
@@ -684,13 +882,22 @@ def swanctl_diagnostics(
     resolved_swanctl_path = commands.resolve_swanctl_path() or ""
     swanctl_rpm_owner = _rpm_owner_for_path(resolved_swanctl_path)
     preflight = strongswan_preflight(raise_on_failure=False, ensure_service=False)
+    vici_uri = str(preflight.get("selected_vici_uri", "") or "")
     if preflight.get("vici_usable"):
-        list_conns_completed = commands.run_command(commands.swanctl_list_conns())
-        list_sas_completed = commands.run_command(commands.swanctl_list_sas())
+        list_conns_completed = commands.run_command(
+            commands.swanctl_list_conns(vici_uri=vici_uri)
+        )
+        list_sas_completed = commands.run_command(commands.swanctl_list_sas(vici_uri=vici_uri))
     else:
         message = str(preflight.get("preflight_error") or commands.VICI_UNAVAILABLE_MESSAGE)
-        list_conns_completed = _synthetic_completed(commands.swanctl_list_conns().args, message)
-        list_sas_completed = _synthetic_completed(commands.swanctl_list_sas().args, message)
+        list_conns_completed = _synthetic_completed(
+            commands.swanctl_list_conns(vici_uri=vici_uri).args,
+            message,
+        )
+        list_sas_completed = _synthetic_completed(
+            commands.swanctl_list_sas(vici_uri=vici_uri).args,
+            message,
+        )
     lo_status_completed = commands.run_command(resolvectl_status_interface(LOOPBACK_DNS_INTERFACE))
     dummy_status_completed = commands.run_command(resolvectl_status_interface(DUMMY_DNS_INTERFACE))
     default_route_completed = commands.run_command(ip_route_get("1.1.1.1"))
@@ -781,6 +988,7 @@ def swanctl_diagnostics(
         "vici_socket_listening": preflight.get("vici_socket_listening", False),
         "vici_socket_available": list_conns_ok,
         "vici_usable": list_conns_ok,
+        "selected_vici_uri": vici_uri,
         "vici_socket_path": preflight.get("vici_socket_path", ""),
         "vici_socket_candidates": preflight.get("vici_socket_candidates", []),
         "vici_listening_paths": preflight.get("vici_listening_paths", []),
@@ -804,6 +1012,8 @@ def swanctl_diagnostics(
         "files_under_roots": swanctl_files_by_root(),
         "generated_profile_file": str(profile_config) if profile_config else "",
         "generated_profile_file_exists": bool(profile_config and profile_config.exists()),
+        "profile_file_path": str(profile_config) if profile_config else "",
+        "profile_file_exists": bool(profile_config and profile_config.exists()),
         "generated_connection_loaded": loaded,
         "list_conns_returncode": list_conns_completed.returncode,
         "list_conns_stdout": getattr(list_conns_completed, "stdout", "") or "",
@@ -857,7 +1067,6 @@ def error_to_message(exc: Exception) -> str:
 
 
 def _run_swanctl_for_output(spec: commands.CommandSpec) -> str:
-    strongswan_preflight()
     completed = commands.run_command(spec)
     output = _completed_message(completed)
     if completed.returncode != 0:

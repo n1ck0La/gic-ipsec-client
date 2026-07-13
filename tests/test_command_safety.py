@@ -85,6 +85,28 @@ def test_runtime_command_timeouts_are_bounded() -> None:
     assert commands.journalctl_logs().timeout_seconds == 10
 
 
+def test_swanctl_commands_support_explicit_fedora_vici_uri() -> None:
+    uri = commands.FEDORA_VICI_URI
+
+    assert commands.swanctl_list_conns(vici_uri=uri).args[1:] == (
+        "--uri",
+        uri,
+        "--list-conns",
+    )
+    assert commands.swanctl_load_all(vici_uri=uri).args[1:] == (
+        "--uri",
+        uri,
+        "--load-all",
+    )
+    assert commands.swanctl_initiate("gic-child", vici_uri=uri).args[1:] == (
+        "--uri",
+        uri,
+        "--initiate",
+        "--child",
+        "gic-child",
+    )
+
+
 def test_swanctl_resolution_prefers_path_then_fedora_fallback(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

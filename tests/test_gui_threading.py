@@ -165,6 +165,30 @@ def test_fake_long_running_connect_does_not_freeze_event_loop(
     window.close()
 
 
+def test_repeated_connect_click_does_not_start_second_helper(
+    app: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    profile: VpnProfile,
+) -> None:
+    calls: list[tuple[str, tuple[str, ...]]] = []
+
+    def slow_helper(subcommand: str, args: tuple[str, ...]) -> HelperResult:
+        calls.append((subcommand, args))
+        time.sleep(0.25)
+        return HelperResult(subcommand=subcommand, returncode=0, output="connected")
+
+    monkeypatch.setattr(workers, "run_helper_command", slow_helper)
+    window = _window(app, monkeypatch, tmp_path, profile)
+
+    window.connect_profile()
+    window.connect_profile()
+
+    assert _wait_until(app, lambda: window._connect_thread is None, timeout_seconds=2.0)
+    assert calls == [("connect", (profile.id,))]
+    window.close()
+
+
 def test_qplaintextedit_logging_uses_signal_handler_only() -> None:
     handler = SignalLogHandler()
     messages: list[str] = []

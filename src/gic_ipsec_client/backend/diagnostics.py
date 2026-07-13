@@ -519,6 +519,9 @@ def collect_diagnostics(
             "generated_profile_file_exists",
             False,
         ),
+        "profile_file_path": swanctl_diagnostics.get("profile_file_path", ""),
+        "profile_file_exists": swanctl_diagnostics.get("profile_file_exists", False),
+        "selected_vici_uri": swanctl_diagnostics.get("selected_vici_uri", ""),
         "generated_connection_loaded": swanctl_diagnostics.get("generated_connection_loaded"),
         "helper_error": swanctl_diagnostics.get("error", ""),
     }
@@ -616,6 +619,7 @@ def collect_diagnostics(
             False,
         ),
         "vici_usable": swanctl_diagnostics.get("vici_usable", False),
+        "selected VICI URI": swanctl_diagnostics.get("selected_vici_uri", ""),
         "vici_socket_path": swanctl_diagnostics.get("vici_socket_path", ""),
         "vici_socket_candidates": swanctl_diagnostics.get("vici_socket_candidates", []),
         "started_strongswan_service": swanctl_diagnostics.get(

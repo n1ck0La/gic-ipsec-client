@@ -23,10 +23,16 @@ nmcli device show
   `strongswan-starter.service` is incompatible and is disabled during Connect.
 - Run `swanctl --list-conns`. A zero exit status is the readiness check for VICI.
   A `charon.vici` file by itself can be stale and does not prove that VICI works.
+- On Fedora, when `/run/strongswan/charon.vici` exists, GIC uses
+  `swanctl --uri unix:///run/strongswan/charon.vici ...` for every VICI command.
 - GIC diagnostics separately report file existence, `ss -lx` listening state,
   and `swanctl --list-conns` connectivity for these paths:
   `/run/strongswan/charon.vici`, `/var/run/strongswan/charon.vici`,
   `/run/charon.vici`, and `/var/run/charon.vici`.
+- If VICI recovery is required, GIC stops both `strongswan.service` and
+  `strongswan-starter.service` before removing any known stale VICI path, then
+  starts `strongswan.service`. It never removes a VICI path while either service
+  is still active.
 - Confirm the `vici`, `eap-identity`, `eap-mschapv2`, `kernel-netlink`, and DNS
   integration plugins are installed.
 - Run GIC diagnostics and export a sanitized bundle when asking for help.

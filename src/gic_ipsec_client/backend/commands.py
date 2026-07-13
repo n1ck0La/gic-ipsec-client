@@ -33,8 +33,10 @@ POLKIT_EXEC_PATH_KEY = "org.freedesktop.policykit.exec.path"
 STRONGSWAN_STARTER_SERVICE = "strongswan-starter.service"
 STRONGSWAN_SERVICE = "strongswan.service"
 STRONGSWAN_SERVICE_CANDIDATES = ("strongswan.service", "charon-systemd.service")
+FEDORA_VICI_SOCKET_PATH = Path("/run/strongswan/charon.vici")
+FEDORA_VICI_URI = f"unix://{FEDORA_VICI_SOCKET_PATH}"
 VICI_SOCKET_PATHS = (
-    Path("/run/strongswan/charon.vici"),
+    FEDORA_VICI_SOCKET_PATH,
     Path("/var/run/strongswan/charon.vici"),
     Path("/run/charon.vici"),
     Path("/var/run/charon.vici"),
@@ -109,30 +111,38 @@ def swanctl_executable() -> str:
     return resolve_swanctl_path() or "swanctl"
 
 
-def swanctl_load_all() -> CommandSpec:
-    return CommandSpec((swanctl_executable(), "--load-all"), timeout_seconds=20)
+def _swanctl_args(*args: str, vici_uri: str = "") -> tuple[str, ...]:
+    command = [swanctl_executable()]
+    if vici_uri:
+        command.extend(("--uri", vici_uri))
+    command.extend(args)
+    return tuple(command)
 
 
-def swanctl_initiate(child_name: str) -> CommandSpec:
+def swanctl_load_all(*, vici_uri: str = "") -> CommandSpec:
+    return CommandSpec(_swanctl_args("--load-all", vici_uri=vici_uri), timeout_seconds=20)
+
+
+def swanctl_initiate(child_name: str, *, vici_uri: str = "") -> CommandSpec:
     return CommandSpec(
-        (swanctl_executable(), "--initiate", "--child", child_name),
+        _swanctl_args("--initiate", "--child", child_name, vici_uri=vici_uri),
         timeout_seconds=60,
     )
 
 
-def swanctl_terminate(connection_name: str) -> CommandSpec:
+def swanctl_terminate(connection_name: str, *, vici_uri: str = "") -> CommandSpec:
     return CommandSpec(
-        (swanctl_executable(), "--terminate", "--ike", connection_name),
+        _swanctl_args("--terminate", "--ike", connection_name, vici_uri=vici_uri),
         timeout_seconds=20,
     )
 
 
-def swanctl_list_sas() -> CommandSpec:
-    return CommandSpec((swanctl_executable(), "--list-sas"), timeout_seconds=15)
+def swanctl_list_sas(*, vici_uri: str = "") -> CommandSpec:
+    return CommandSpec(_swanctl_args("--list-sas", vici_uri=vici_uri), timeout_seconds=15)
 
 
-def swanctl_list_conns() -> CommandSpec:
-    return CommandSpec((swanctl_executable(), "--list-conns"), timeout_seconds=15)
+def swanctl_list_conns(*, vici_uri: str = "") -> CommandSpec:
+    return CommandSpec(_swanctl_args("--list-conns", vici_uri=vici_uri), timeout_seconds=15)
 
 
 def rpm_query_file_owner(path: str | Path) -> CommandSpec:
@@ -207,8 +217,11 @@ def systemctl_list_unit_file(service_name: str) -> CommandSpec:
 
 
 def systemctl_start(service_name: str) -> CommandSpec:
-    service = service_name.removesuffix(".service")
-    return CommandSpec(("systemctl", "start", service), timeout_seconds=15)
+    return CommandSpec(("systemctl", "start", service_name), timeout_seconds=15)
+
+
+def systemctl_stop_services(*service_names: str) -> CommandSpec:
+    return CommandSpec(("systemctl", "stop", *service_names), timeout_seconds=30)
 
 
 def systemctl_disable_now(service_name: str) -> CommandSpec:
