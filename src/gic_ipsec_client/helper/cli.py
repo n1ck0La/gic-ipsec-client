@@ -27,6 +27,12 @@ def build_parser() -> argparse.ArgumentParser:
     load = subcommands.add_parser("load-profile", help="Run swanctl --load-all.")
     load.add_argument("--config-root", default="")
 
+    connect_request = subcommands.add_parser(
+        "connect",
+        help="Render and connect a staged profile request.",
+    )
+    connect_request.add_argument("profile_id")
+
     connect = subcommands.add_parser("connect-profile", help="Initiate a rendered profile.")
     connect.add_argument("--profile-uuid", required=True)
     connect.add_argument("--config-root", default="")
@@ -34,6 +40,9 @@ def build_parser() -> argparse.ArgumentParser:
     disconnect = subcommands.add_parser("disconnect-profile", help="Terminate a profile.")
     disconnect.add_argument("--profile-uuid", required=True)
     disconnect.add_argument("--config-root", default="")
+
+    disconnect_once = subcommands.add_parser("disconnect", help="Terminate a profile.")
+    disconnect_once.add_argument("profile_id")
 
     reconnect = subcommands.add_parser(
         "reconnect-network-interface",
@@ -87,6 +96,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "load-profile":
             privileged.ensure_runtime_tools()
             return privileged.load_profile()
+        if args.command == "connect":
+            privileged.ensure_runtime_tools()
+            return privileged.connect_from_request(args.profile_id, uid=uid)
         if args.command == "connect-profile":
             privileged.ensure_runtime_tools()
             return privileged.connect_profile(
@@ -96,6 +108,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "disconnect-profile":
             privileged.ensure_runtime_tools()
             return privileged.disconnect_profile(args.profile_uuid)
+        if args.command == "disconnect":
+            privileged.ensure_runtime_tools()
+            return privileged.disconnect_profile(args.profile_id)
         if args.command == "reconnect-network-interface":
             return privileged.reconnect_network_interface(args.profile_uuid)
         if args.command == "status-profile":

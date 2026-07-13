@@ -11,6 +11,7 @@ from gic_ipsec_client.backend.models import ConnectionStatus, VpnProfile
 from gic_ipsec_client.backend.strongswan import StrongSwanBackend
 from gic_ipsec_client.backend.swanctl_paths import SwanctlLayout
 from gic_ipsec_client.backend.validators import ProfileValidationError
+from gic_ipsec_client.helper import privileged
 from gic_ipsec_client.helper.cli import main as helper_main
 from gic_ipsec_client.main import main
 
@@ -137,10 +138,33 @@ def test_pkexec_command_uses_absolute_helper_path(monkeypatch: pytest.MonkeyPatc
     helper_path = "/usr/libexec/gic-ipsec-client/gic-ipsec-helper"
     monkeypatch.setattr(commands, "resolve_helper_path", lambda: helper_path)
 
-    spec = commands.build_pkexec_helper_command("connect-profile", "--profile-uuid", "uuid")
+    spec = commands.build_pkexec_helper_command("connect", "uuid")
 
-    assert spec.args == ("pkexec", helper_path, "connect-profile", "--profile-uuid", "uuid")
+    assert spec.args == ("pkexec", helper_path, "connect", "uuid")
     assert Path(spec.args[1]).is_absolute()
+
+
+def test_helper_connect_command_uses_positional_profile_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile_id = "00000000-0000-4000-8000-000000000001"
+    calls: list[tuple[str, int]] = []
+    monkeypatch.setattr(privileged, "helper_uid", lambda: 1000)
+    monkeypatch.setattr(privileged, "ensure_runtime_tools", lambda: None)
+    monkeypatch.setattr(
+        privileged,
+        "connect_from_request",
+        lambda selected_id, uid: calls.append((selected_id, uid)) or 0,
+    )
+
+    assert helper_main(["connect", profile_id]) == 0
+    assert calls == [(profile_id, 1000)]
+
+
+def test_polkit_policy_keeps_admin_authorization() -> None:
+    policy = Path("packaging/polkit/com.gicipsec.client.policy").read_text(encoding="utf-8")
+
+    assert "<allow_active>auth_admin_keep</allow_active>" in policy
 
 
 def test_missing_helper_error_is_user_facing(monkeypatch: pytest.MonkeyPatch) -> None:

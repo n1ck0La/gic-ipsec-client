@@ -19,10 +19,14 @@ nmcli device show
 
 ## Common Client Checks
 
-- Confirm `swanctl` is installed and can reach the VICI socket.
-- Confirm a strongSwan service such as `strongswan-starter`, `strongswan`, or
-  `charon-systemd` is active.
-- Confirm `/run/charon.vici` or `/var/run/charon.vici` exists.
+- Confirm `strongswan.service` is active. GIC uses the `swanctl`/VICI backend;
+  `strongswan-starter.service` is incompatible and is disabled during Connect.
+- Run `swanctl --list-conns`. A zero exit status is the readiness check for VICI.
+  A `charon.vici` file by itself can be stale and does not prove that VICI works.
+- GIC diagnostics separately report file existence, `ss -lx` listening state,
+  and `swanctl --list-conns` connectivity for these paths:
+  `/run/strongswan/charon.vici`, `/var/run/strongswan/charon.vici`,
+  `/run/charon.vici`, and `/var/run/charon.vici`.
 - Confirm the `vici`, `eap-identity`, `eap-mschapv2`, `kernel-netlink`, and DNS
   integration plugins are installed.
 - Run GIC diagnostics and export a sanitized bundle when asking for help.
@@ -37,6 +41,26 @@ nmcli device show
   domains, and default-route state before terminating the IKE_SA. If explicit
   restore fails, it runs `nmcli dev reapply <interface>`. The old `gicipsec0`
   dummy link is retained only for cleanup and diagnostics of earlier runs.
+
+## Optional Passwordless Polkit Rule
+
+The packaged policy uses `auth_admin_keep`, so one authentication can be reused
+for a short polkit authorization window. Administrators who accept the security
+tradeoff can instead authorize active local members of `wheel` or `sudo` without
+a password by creating `/etc/polkit-1/rules.d/49-gic-ipsec-client.rules`:
+
+```javascript
+polkit.addRule(function(action, subject) {
+    if (action.id == "com.gicipsec.client.helper" &&
+        subject.active && subject.local &&
+        (subject.isInGroup("wheel") || subject.isInGroup("sudo"))) {
+        return polkit.Result.YES;
+    }
+});
+```
+
+This grants those groups passwordless access to all privileged GIC helper
+actions. Create the rule only on systems where that is appropriate.
 
 ## FortiGate-Side Hints
 

@@ -249,8 +249,9 @@ def test_strongswan_preflight_switches_from_starter_to_swanctl_service(
         if spec.args == ("systemctl", "enable", "--now", "strongswan.service"):
             migrated["value"] = True
             return Completed(0, "")
-        if spec.args == ("find", "/run", "/var/run", "-type", "s", "-name", "*vici*"):
-            return Completed(0, "")
+        if spec.args == ("ss", "-lx"):
+            output = "u_str LISTEN 0 5 /run/charon.vici 123 * 0\n" if migrated["value"] else ""
+            return Completed(0, output)
         if _is_swanctl_command(spec.args, "--list-conns"):
             return Completed(0, "loaded connections\n")
         if spec.args[:2] == ("systemctl", "list-unit-files"):
@@ -278,12 +279,19 @@ def test_strongswan_preflight_switches_from_starter_to_swanctl_service(
     assert payload["strongswan_service_started"] is True
     assert payload["started_strongswan_service"] is True
     assert payload["run_charon_vici_exists"] is True
+    assert payload["run_charon_vici_listening"] is True
+    assert payload["vici_socket_file_exists"] is True
+    assert payload["vici_socket_listening"] is True
     assert payload["vici_socket_available"] is True
+    assert payload["vici_usable"] is True
     assert payload["vici_socket_path"] == "/run/charon.vici"
     assert payload["swanctl_list_conns_ok"] is True
     assert payload["preflight_list_conns_returncode"] == 0
     assert ("systemctl", "disable", "--now", "strongswan-starter.service") in calls
     assert ("systemctl", "enable", "--now", "strongswan.service") in calls
+    assert calls.index(
+        ("systemctl", "disable", "--now", "strongswan-starter.service")
+    ) < calls.index(("systemctl", "enable", "--now", "strongswan.service"))
     assert (
         "systemctl",
         "list-unit-files",
@@ -306,9 +314,11 @@ def test_strongswan_preflight_fails_cleanly_when_vici_socket_never_appears(
             return Completed(0, "strongswan.service enabled\n")
         if spec.args[:2] == ("systemctl", "is-active"):
             return Completed(3, "inactive\n")
+        if spec.args == ("systemctl", "disable", "--now", "strongswan-starter.service"):
+            return Completed(1, "unit not loaded\n")
         if spec.args == ("systemctl", "enable", "--now", "strongswan.service"):
             return Completed(0, "")
-        if spec.args == ("find", "/run", "/var/run", "-type", "s", "-name", "*vici*"):
+        if spec.args == ("ss", "-lx"):
             return Completed(0, "")
         if _is_swanctl_command(spec.args, "--list-conns"):
             return Completed(1, stderr="connecting to VICI failed")
@@ -354,14 +364,150 @@ def test_connect_does_not_load_or_initiate_without_vici(
     assert not any(args for args in calls if Path(args[0]).name == "swanctl")
 
 
-def test_vici_socket_state_finds_nonstandard_vici_socket() -> None:
+def test_stale_vici_socket_file_is_not_usable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
     def fake_run(spec: commands.CommandSpec) -> Completed:
-        assert spec.args == ("find", "/run", "/var/run", "-type", "s", "-name", "*vici*")
-        return Completed(0, "/run/strongswan/charon.vici\n")
+        calls.append(spec.args)
+        if spec.args[:2] == ("systemctl", "list-unit-files"):
+            service = spec.args[2]
+            return Completed(0, f"{service} enabled\n" if service == "strongswan.service" else "")
+        if spec.args[:2] == ("systemctl", "is-active"):
+            return Completed(0, "active\n")
+        if spec.args == ("ss", "-lx"):
+            return Completed(0, "")
+        if _is_swanctl_command(spec.args, "--list-conns"):
+            return Completed(1, stderr="connecting to VICI failed: Connection refused")
+        raise AssertionError(f"unexpected command: {spec.args}")
+
+    monkeypatch.setattr(commands, "command_v", lambda name: "/usr/bin/swanctl")
+    monkeypatch.setattr(commands, "resolve_swanctl_path", lambda: "/usr/bin/swanctl")
+
+    payload = privileged.strongswan_preflight(
+        raise_on_failure=False,
+        ensure_service=False,
+        run_command=fake_run,
+        socket_exists=lambda path: path == Path("/run/strongswan/charon.vici"),
+        sleep=lambda seconds: None,
+    )
+
+    assert payload["vici_socket_file_exists"] is True
+    assert payload["vici_socket_listening"] is False
+    assert payload["swanctl_list_conns_ok"] is False
+    assert payload["vici_usable"] is False
+    assert payload["vici_socket_available"] is False
+    assert "Connection refused" in str(payload["preflight_error"])
+    assert not any(args[:2] == ("systemctl", "disable") for args in calls)
+    assert not any(args[:2] == ("systemctl", "enable") for args in calls)
+
+
+def test_connect_lists_sas_before_applying_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    profile_id = "00000000-0000-4000-8000-000000000001"
+    calls: list[str] = []
+
+    def fake_run(spec: commands.CommandSpec) -> Completed:
+        if _is_swanctl_command(spec.args, "--load-all"):
+            calls.append("load-all")
+            return Completed(0, "loaded")
+        if _is_swanctl_command(spec.args, "--list-conns"):
+            calls.append("list-conns")
+            return Completed(
+                0,
+                f"gic-{profile_id}:\n  children:\n    gic-{profile_id}-child:\n",
+            )
+        if _is_swanctl_command(
+            spec.args,
+            "--initiate",
+            "--child",
+            f"gic-{profile_id}-child",
+        ):
+            calls.append("initiate")
+            return Completed(0, "initiated")
+        if _is_swanctl_command(spec.args, "--list-sas"):
+            calls.append("list-sas")
+            return Completed(0, f"gic-{profile_id}: ESTABLISHED\n")
+        raise AssertionError(f"unexpected command: {spec.args}")
+
+    def fake_dns(**kwargs: object) -> list[str]:
+        calls.append("apply-dns")
+        return []
+
+    monkeypatch.setattr(
+        privileged,
+        "strongswan_preflight",
+        lambda *args, **kwargs: {"vici_usable": True},
+    )
+    monkeypatch.setattr(
+        privileged,
+        "_read_runtime_profile",
+        lambda profile_uuid: {
+            "dns_servers": ["10.0.0.53"],
+            "dns_search_domains": ["corp.example"],
+            "split_tunnel_enabled": True,
+            "dns_test_names": ["host.corp.example"],
+            "dns_linux_strategy": "auto",
+            "dns_interface": "auto",
+        },
+    )
+    monkeypatch.setattr(privileged, "apply_resolved_dns", fake_dns)
+    monkeypatch.setattr(commands, "run_command", fake_run)
+
+    assert privileged.connect_profile(profile_id) == 0
+    assert calls == ["load-all", "list-conns", "initiate", "list-sas", "apply-dns"]
+
+
+def test_connect_from_request_renders_and_connects_in_one_helper_process(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    profile_id = "00000000-0000-4000-8000-000000000001"
+    request_dir = tmp_path / "helper-requests"
+    request_dir.mkdir()
+    request_path = request_dir / f"{profile_id}.json"
+    request_path.write_text("{}", encoding="utf-8")
+    request_path.chmod(0o600)
+    uid = request_path.stat().st_uid
+    calls: list[str] = []
+
+    def fake_render(
+        path: Path,
+        *,
+        uid: int,
+        expected_action: str,
+        expected_profile_id: str,
+    ) -> dict[str, str]:
+        assert path == request_path
+        assert uid == request_path.stat().st_uid
+        assert expected_action == "connect"
+        assert expected_profile_id == profile_id
+        calls.append("render")
+        return {}
+
+    monkeypatch.setattr(privileged, "request_dir_for_uid", lambda selected_uid: request_dir)
+    monkeypatch.setattr(privileged, "render_profile_from_request", fake_render)
+    monkeypatch.setattr(
+        privileged,
+        "connect_profile",
+        lambda selected_id: calls.append(f"connect:{selected_id}") or 0,
+    )
+
+    assert privileged.connect_from_request(profile_id, uid=uid) == 0
+    assert calls == ["render", f"connect:{profile_id}"]
+    assert not request_path.exists()
+
+
+def test_vici_socket_state_reports_listening_separately_from_file_existence() -> None:
+    def fake_run(spec: commands.CommandSpec) -> Completed:
+        assert spec.args == ("ss", "-lx")
+        return Completed(0, "u_str LISTEN 0 5 /run/strongswan/charon.vici 123 * 0\n")
 
     payload = privileged._vici_socket_state(lambda path: False, run_command=fake_run)
 
-    assert payload["vici_socket_available"] is True
+    assert payload["vici_socket_file_exists"] is False
+    assert payload["vici_socket_listening"] is True
+    assert payload["vici_socket_available"] is False
     assert payload["vici_socket_path"] == "/run/strongswan/charon.vici"
     assert payload["vici_socket_candidates"] == ["/run/strongswan/charon.vici"]
 
@@ -391,6 +537,15 @@ def test_fedora_vici_socket_under_strongswan_runtime_passes_preflight(
             if spec.args[2] == "strongswan.service":
                 return Completed(0, "active\n")
             return Completed(3, "inactive\n")
+        if spec.args == ("systemctl", "disable", "--now", "strongswan-starter.service"):
+            return Completed(0, "")
+        if spec.args == ("systemctl", "enable", "--now", "strongswan.service"):
+            return Completed(0, "")
+        if spec.args == ("ss", "-lx"):
+            return Completed(
+                0,
+                "u_str LISTEN 0 5 /run/strongswan/charon.vici 123 * 0\n",
+            )
         if _is_swanctl_command(spec.args, "--list-conns"):
             return Completed(0, "gic-fedora:\n")
         raise AssertionError(f"unexpected command: {spec.args}")
@@ -411,9 +566,12 @@ def test_fedora_vici_socket_under_strongswan_runtime_passes_preflight(
     assert payload["strongswan_service_active_state"] == "active"
     assert payload["charon_systemd_service_available"] is False
     assert payload["run_strongswan_charon_vici_exists"] is True
+    assert payload["run_strongswan_charon_vici_listening"] is True
     assert payload["vici_socket_path"] == "/run/strongswan/charon.vici"
     assert payload["swanctl_list_conns_ok"] is True
     assert payload["vici_socket_available"] is True
+    assert ("systemctl", "disable", "--now", "strongswan-starter.service") in calls
+    assert ("systemctl", "enable", "--now", "strongswan.service") in calls
     assert ("systemctl", "start", "charon-systemd") not in calls
 
 
@@ -449,13 +607,14 @@ def test_swanctl_diagnostics_reports_loaded_connection_after_vici(
     monkeypatch.setattr(
         privileged,
         "strongswan_preflight",
-        lambda raise_on_failure=True: {
+        lambda **kwargs: {
             "selected_strongswan_service": "strongswan.service",
             "detected_strongswan_service": "strongswan.service",
             "strongswan_service_state": "active",
             "strongswan_starter_active": False,
             "strongswan_starter_disabled": False,
             "vici_socket_available": True,
+            "vici_usable": True,
             "vici_socket_path": "/run/charon.vici",
             "run_charon_vici_exists": True,
             "var_run_charon_vici_exists": False,

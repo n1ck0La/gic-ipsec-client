@@ -85,7 +85,6 @@ def test_connect_worker_emits_progress_signals() -> None:
     worker = ConnectWorker(
         request_path="/tmp/request.json",
         profile_id="00000000-0000-4000-8000-000000000001",
-        config_args=("--config-root", "/etc/swanctl"),
         helper_runner=fake_helper,
     )
     progress: list[str] = []
@@ -95,8 +94,8 @@ def test_connect_worker_emits_progress_signals() -> None:
 
     worker.run()
 
-    assert progress == ["Rendering profile...", "Starting connection..."]
-    assert [call[0] for call in calls] == ["render-profile", "connect-profile"]
+    assert progress == ["Starting connection..."]
+    assert calls == [("connect", ("00000000-0000-4000-8000-000000000001",))]
     assert results
 
 

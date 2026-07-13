@@ -587,7 +587,35 @@ def collect_diagnostics(
             "var_run_strongswan_charon_vici_exists",
             False,
         ),
-        "vici_socket_available": swanctl_diagnostics.get("vici_socket_available", False),
+        "/run/charon.vici listening (ss -lx)": swanctl_diagnostics.get(
+            "run_charon_vici_listening",
+            False,
+        ),
+        "/run/strongswan/charon.vici listening (ss -lx)": swanctl_diagnostics.get(
+            "run_strongswan_charon_vici_listening",
+            False,
+        ),
+        "/var/run/charon.vici listening (ss -lx)": swanctl_diagnostics.get(
+            "var_run_charon_vici_listening",
+            False,
+        ),
+        "/var/run/strongswan/charon.vici listening (ss -lx)": swanctl_diagnostics.get(
+            "var_run_strongswan_charon_vici_listening",
+            False,
+        ),
+        "VICI socket file exists": swanctl_diagnostics.get(
+            "vici_socket_file_exists",
+            False,
+        ),
+        "VICI socket listening (ss -lx)": swanctl_diagnostics.get(
+            "vici_socket_listening",
+            False,
+        ),
+        "swanctl can connect to VICI": swanctl_diagnostics.get(
+            "swanctl_list_conns_ok",
+            False,
+        ),
+        "vici_usable": swanctl_diagnostics.get("vici_usable", False),
         "vici_socket_path": swanctl_diagnostics.get("vici_socket_path", ""),
         "vici_socket_candidates": swanctl_diagnostics.get("vici_socket_candidates", []),
         "started_strongswan_service": swanctl_diagnostics.get(

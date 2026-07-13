@@ -37,7 +37,6 @@ from gic_ipsec_client.gui.log_viewer import LogViewer
 from gic_ipsec_client.gui.profile_editor import ProfileEditor
 from gic_ipsec_client.gui.status_panel import StatusPanel
 from gic_ipsec_client.gui.workers import (
-    ConnectResult,
     ConnectWorker,
     DebugBundleWorker,
     DiagnosticsWorker,
@@ -335,7 +334,6 @@ class MainWindow(QMainWindow):
         worker = ConnectWorker(
             request_path=str(request_path),
             profile_id=profile.id,
-            config_args=self._config_root_args(),
         )
         self._start_connect_worker(worker)
 
@@ -348,8 +346,8 @@ class MainWindow(QMainWindow):
             self._append_log("Disconnect already in progress.")
             return
         worker = HelperWorker(
-            "disconnect-profile",
-            ("--profile-uuid", profile.id, *self._config_root_args()),
+            "disconnect",
+            (profile.id,),
             progress_message="Disconnecting profile...",
         )
         self._start_disconnect_worker(worker)
@@ -536,12 +534,10 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _on_connect_finished(self, result: object) -> None:
         self._assert_ui_thread()
-        if not isinstance(result, ConnectResult):
-            self._on_connect_failed("Connect failed: invalid worker result.")
-            return
-        self._record_helper_output(result.output)
-        self._set_status(ConnectionStatus.CONNECTED if result.ok else ConnectionStatus.FAILED)
-        if result.ok:
+        code, output = self._coerce_helper_result(result)
+        self._record_helper_output(output)
+        self._set_status(ConnectionStatus.CONNECTED if code == 0 else ConnectionStatus.FAILED)
+        if code == 0:
             self.disconnect_warning_label.setVisible(False)
 
     @Slot(str)
@@ -669,7 +665,7 @@ class MainWindow(QMainWindow):
         os.chmod(request_dir, 0o700)
         request_path = request_dir / f"{profile.id}.json"
         payload = {
-            "action": "render_profile",
+            "action": "connect",
             "profile": profile.to_dict(include_secrets=True),
             "swanctl_config_root": self._config_root_override(),
         }

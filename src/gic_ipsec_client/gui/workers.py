@@ -19,26 +19,6 @@ class HelperResult:
     output: str
 
 
-@dataclass(frozen=True, slots=True)
-class ConnectResult:
-    render: HelperResult
-    connect: HelperResult | None
-
-    @property
-    def ok(self) -> bool:
-        return self.render.returncode == 0 and bool(
-            self.connect and self.connect.returncode == 0
-        )
-
-    @property
-    def output(self) -> str:
-        return "\n".join(
-            result.output
-            for result in (self.render, self.connect)
-            if result is not None and result.output
-        )
-
-
 HelperRunner = Callable[[str, tuple[str, ...]], HelperResult]
 BackendFactory = Callable[[], StrongSwanBackend]
 
@@ -92,33 +72,24 @@ class ConnectWorker(QObject):
         *,
         request_path: str,
         profile_id: str,
-        config_args: tuple[str, ...],
         helper_runner: HelperRunner | None = None,
     ) -> None:
         super().__init__()
         self._request_path = request_path
         self._profile_id = profile_id
-        self._config_args = config_args
         self._helper_runner = helper_runner or run_helper_command
 
     def run(self) -> None:
         try:
-            self.progress.emit("Rendering profile...")
-            render = self._helper_runner(
-                "render-profile",
-                ("--request", self._request_path, *self._config_args),
-            )
-            if render.returncode != 0:
-                self.finished.emit(ConnectResult(render=render, connect=None))
-                return
             self.progress.emit("Starting connection...")
-            connect = self._helper_runner(
-                "connect-profile",
-                ("--profile-uuid", self._profile_id, *self._config_args),
-            )
-            self.finished.emit(ConnectResult(render=render, connect=connect))
+            self.finished.emit(self._helper_runner("connect", (self._profile_id,)))
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(str(exc))
+        finally:
+            try:
+                Path(self._request_path).unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 class DiagnosticsWorker(QObject):
